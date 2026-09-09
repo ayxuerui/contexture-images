@@ -7,9 +7,20 @@
 # Making the version legible in the tag is the whole point of publishing these.
 name: Release
 
+# Publishing is driven by CTXR_VERSION, not by a tag.
+#
+# Merging a bump PR is a USER push, which triggers workflows normally -- so the merge is
+# what publishes, with no manual tagging step. The tag is created afterwards, as a record
+# of what shipped, rather than being the thing that causes it.
+#
+# It has to work this way round. A tag pushed by a workflow using GITHUB_TOKEN does NOT
+# trigger other workflows (GitHub blocks that to prevent recursion; workflow_dispatch and
+# repository_dispatch are the only exceptions), so "workflow creates tag -> release fires
+# on the tag" would silently do nothing at all.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['CTXR_VERSION']
   workflow_dispatch:
     inputs:
       ctxr_version:
@@ -107,3 +118,36 @@ jobs:
             CTXR_VERSION=${{ steps.ctxr.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # A separate job, not a step in `publish`, for two reasons: it must run exactly ONCE no
+  # matter how many harnesses the matrix grows to (a per-leg step would race to push the
+  # same tag), and it must only run once every leg has succeeded.
+  #
+  # Not a trigger -- see the note on `on:` above. This records what shipped; it never gates
+  # a publish.
+  tag:
+    name: tag the published version
+    needs: publish
+    if: success()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tag
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < CTXR_VERSION)"
+          tag="v${version}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "tag ${tag} already exists - leaving it alone"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "${tag}" -m "contexture-hermes ${tag}"
+          git push origin "${tag}"
+          echo "tagged ${tag}"
