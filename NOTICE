@@ -1,0 +1,59 @@
+# Third-party components
+
+The images published from this repository are derived works. The MIT text each
+licence requires to travel with a redistribution is reproduced in full below.
+
+Verified 2026-09-09 by inspecting the pinned images directly:
+
+    docker run --rm --entrypoint sh nousresearch/hermes-agent:v2026.8.31 \
+      -c 'cat /opt/hermes/LICENSE'
+    docker run --rm --entrypoint sh ghcr.io/nesquena/hermes-webui:0.52.113 \
+      -c 'cat /apptoo/LICENSE'
+
+Both are MIT, so redistribution is permitted provided this notice is preserved.
+Re-verify when either pin moves.
+
+--------------------------------------------------------------------------------
+
+## Hermes Agent — the base image of contexture-hermes
+
+  Image:   nousresearch/hermes-agent:v2026.8.31
+  Source:  https://github.com/NousResearch/hermes
+  Licence: MIT — Copyright (c) 2025 Nous Research
+
+## Hermes Web UI — source tree grafted into /opt/hermes-webui
+
+  Image:   ghcr.io/nesquena/hermes-webui:0.52.113
+  Source:  https://github.com/nesquena/hermes-webui
+  Licence: MIT — Copyright (c) 2025 Hermes Web UI Contributors
+
+--------------------------------------------------------------------------------
+
+Both licences read, in full:
+
+    MIT License
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+## Installed at build time, not redistributed as source
+
+  gh (GitHub CLI)  https://github.com/cli/cli          MIT
+  ctxr-cli         https://github.com/ayxuerui/contexture   MIT

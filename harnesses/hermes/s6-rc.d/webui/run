@@ -1,0 +1,55 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Hermes WebUI service.
+#
+# Modelled directly on the image's own ../dashboard/run — same env gate, same HOME reset,
+# same venv activation, same s6-setuidgid drop. Deliberately so: the dashboard service is
+# the in-image precedent for "a second long-lived HTTP server beside the gateway", and
+# matching it means this behaves identically under s6-svstat, restarts and shutdown.
+#
+# Always declared so s6 has a supervised slot; when HERMES_WEBUI_ENABLED is not truthy this
+# exits 0 and the companion finish script returns 125 (s6's "permanent failure, do not
+# restart"), so the slot reports down. That keeps the image generic — the WebUI is opt-in,
+# exactly like the dashboard, so a one-off provisioning or `ctxr serve` container running
+# this same image never starts a web server.
+#
+# Running here rather than in a second container is what removes the gateway chat bridge:
+# the WebUI runs the agent IN-PROCESS, in the same container that holds gh/ctxr/node, so a
+# browser turn and a chat turn (Slack, Telegram, whatever the deployment wires up) execute
+# on the same runtime with the same tools. See the Dockerfile header for why that matters
+# (upstream #6008 / #681).
+
+case "${HERMES_WEBUI_ENABLED:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# with-contenv repopulates HOME from /init as /root. Reset it before dropping privileges so
+# HOME-anchored state lands under /opt/data — same reason the dashboard service does this.
+export HOME=/opt/data
+
+# Where the agent lives in THIS image. Not optional and not a deployment choice: the WebUI
+# resolves the agent by PATH, not by import (api/config.py::_discover_agent_dir), and none
+# of its six auto-discovery candidates is /opt/hermes — it probes $HERMES_HOME/hermes-agent,
+# ../hermes-agent, ~/hermes-agent and so on. /opt/hermes satisfies its own
+# _looks_like_agent_source_root() check; it is simply never looked at. Without this the
+# server still boots and still answers 200, but prints "agent dir: NOT FOUND / agent
+# features will not work" and loses model auto-detection, personality routing and CLI
+# session import — the exact capabilities grafting the source tree in exists to preserve.
+# Verified: unset -> NOT FOUND; set -> the agent dir resolves.
+#
+# Set here rather than in a compose file because it is a fact about the image layout, so it
+# must hold for a bare `docker run` too. `:-` keeps it overridable.
+export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/opt/hermes}"
+
+# Upstream starts the server as `cd <src>; python server.py`; server.py resolves its static
+# assets and its api package relative to this directory.
+cd /opt/hermes-webui
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+
+# Skip the drop when already non-root.
+[ "$(id -u)" = 0 ] || exec python server.py
+exec s6-setuidgid hermes python server.py

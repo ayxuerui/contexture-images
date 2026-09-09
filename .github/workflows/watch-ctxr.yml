@@ -1,0 +1,83 @@
+# Keep CTXR_VERSION current with the npm registry.
+#
+# This workflow is the price of publishing these images from their own repo rather than from
+# contexture's release pipeline: nothing here automatically knows that ctxr-cli published a new
+# version. Without it, "the image tag is the ctxr version" degrades from a mechanism to a
+# habit — and a drifted pin is precisely the failure that has taken these deployments down
+# before. So this is not optional maintenance; it is the missing half of the release coupling.
+#
+# It only ever opens a PR. Publishing stays a deliberate act: merge, then tag.
+name: Watch ctxr-cli
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check for a newer ctxr-cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Compare pinned against published
+        id: compare
+        run: |
+          set -euo pipefail
+          pinned="$(tr -d '[:space:]' < CTXR_VERSION)"
+          latest="$(npm view ctxr-cli version)"
+          echo "pinned:    ${pinned}"
+          echo "published: ${latest}"
+          if [ -z "${latest}" ]; then
+            echo "::error::npm view returned nothing; refusing to guess"
+            exit 1
+          fi
+          echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          if [ "${pinned}" = "${latest}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump CTXR_VERSION
+        if: steps.compare.outputs.changed == 'true'
+        run: printf '%s\n' "${{ steps.compare.outputs.latest }}" > CTXR_VERSION
+
+      - name: Open a bump PR
+        if: steps.compare.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/ctxr-${{ steps.compare.outputs.latest }}
+          base: main
+          title: 'Bump ctxr-cli to ${{ steps.compare.outputs.latest }}'
+          commit-message: 'Bump ctxr-cli to ${{ steps.compare.outputs.latest }}'
+          delete-branch: true
+          body: |
+            `ctxr-cli` published **${{ steps.compare.outputs.latest }}**; this repo pins
+            **${{ steps.compare.outputs.pinned }}**.
+
+            CI builds this branch, and the build asserts the installed `ctxr --version` equals
+            the pin — so a green check here means the new version installs and runs in the
+            image. Merging does not publish; tag the merge commit to do that.
+
+            **Before merging, check the consuming stores.** Since ctxr 0.10.0 the schema gate is
+            both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
+            `contexture.yaml` `schema_version` is refused just as an older one is. Confirm each
+            store is at a `schema_version` this release supports, and read the release notes for
+            a one-time fixup, before rolling the tag out.

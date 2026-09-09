@@ -1,0 +1,109 @@
+# Build and push every harness image to GHCR.
+#
+# The image tag IS the ctxr version it contains, and the Dockerfile asserts that equality at
+# build time (lib/install-contexture-toolchain.sh). That is deliberate: a ctxr pin drifting
+# from the store's schema_version is the failure that has broken these deployments repeatedly,
+# and since ctxr 0.10.0 the schema gate is both-directional with no `ctxr migrate` to bridge it.
+# Making the version legible in the tag is the whole point of publishing these.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ctxr_version:
+        description: 'ctxr-cli version to build (defaults to the CTXR_VERSION file)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish (${{ matrix.harness }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [hermes]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve CTXR_VERSION
+        id: ctxr
+        env:
+          OVERRIDE: ${{ inputs.ctxr_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OVERRIDE:-}" ]; then
+            version="${OVERRIDE}"
+          else
+            version="$(tr -d '[:space:]' < CTXR_VERSION)"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::could not resolve a CTXR_VERSION to build" >&2
+            exit 1
+          fi
+          # Refuse to publish a tag for a version that is not on the registry: the image would
+          # claim a ctxr that nobody can `npm install`.
+          npm view "ctxr-cli@${version}" version >/dev/null
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/contexture-${{ matrix.harness }}
+          tags: |
+            type=raw,value=${{ steps.ctxr.outputs.version }}
+            type=raw,value=${{ steps.ctxr.outputs.version }}-${{ github.sha }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=contexture-${{ matrix.harness }}
+            org.opencontainers.image.description=Hermes agent runtime with the Contexture toolchain (ctxr ${{ steps.ctxr.outputs.version }})
+            org.opencontainers.image.licenses=MIT
+
+      # arm64 matters here: the deployments consuming this run on aarch64. amd64 is carried so
+      # the published image is useful off that host.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: harnesses/${{ matrix.harness }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CTXR_VERSION=${{ steps.ctxr.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

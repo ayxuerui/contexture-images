@@ -1,0 +1,20 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# WebUI finish script. Companion to ./run, and a copy of ../dashboard/finish's logic.
+#
+# When HERMES_WEBUI_ENABLED is unset (or falsy), ./run exits 0 immediately. Without this
+# script s6-supervise would restart it in a tight loop. Exiting 125 tells s6-supervise
+# "permanently failed, do not restart", so the slot reports down and s6-svstat matches
+# reality. When the WebUI IS enabled and the server later dies, exit non-125 so s6 restarts
+# it — that is the whole point of running it supervised.
+#
+# Arguments: $1=run-exit-code, $2=signal-num, $3=service-dir-name, $4=run-pgid. servicedir(7).
+
+case "${HERMES_WEBUI_ENABLED:-}" in
+    1|true|TRUE|True|yes|YES|Yes)
+        exit 0
+        ;;
+    *)
+        exit 125
+        ;;
+esac

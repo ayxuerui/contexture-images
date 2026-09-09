@@ -1,0 +1,8 @@
+# Build context is the repo root so harness Dockerfiles can reach lib/.
+# Nothing below is ever COPYed into an image.
+.git
+.github
+README.md
+NOTICE
+**/*.md
+.env
