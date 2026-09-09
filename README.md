@@ -37,8 +37,23 @@ pin doesn't degrade; every `ctxr` call fails outright, including the ones runnin
 03:00. Putting the version in the tag makes the coupling visible at the point where a deployment
 chooses it.
 
-`CTXR_VERSION` at the repo root is the single source of truth. `watch-ctxr.yml` opens a PR when
-npm publishes something newer; merging does not publish, tagging does.
+`CTXR_VERSION` at the repo root is the single source of truth, and the whole release flow hangs
+off it:
+
+1. `watch-ctxr.yml` polls npm hourly and opens a bump PR when a newer `ctxr-cli` exists.
+2. CI builds that branch. The build asserts the installed `ctxr --version` equals the pin, so a
+   green check means the new version actually installs and runs in the image.
+3. **Merging the PR publishes.** `release.yml` triggers on a push to `main` touching
+   `CTXR_VERSION` — merging is a user push, so it fires normally.
+4. After every leg succeeds, a `v<version>` tag is created as a record of what shipped.
+
+The tag is an output, not an input. It has to be: a tag pushed by a workflow using
+`GITHUB_TOKEN` does not trigger other workflows, so tagging could never have been what causes a
+publish. `workflow_dispatch` remains available to rebuild a version by hand.
+
+Publishing is safe to automate because a published tag is **inert** — consumers pin an explicit
+tag, and nothing reads `:latest`. A new image sits unused until someone bumps their own pin,
+which is where the real judgement belongs (does this ctxr match my store's `schema_version`?).
 
 ## Layout
 

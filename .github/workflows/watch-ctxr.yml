@@ -6,12 +6,14 @@
 # habit — and a drifted pin is precisely the failure that has taken these deployments down
 # before. So this is not optional maintenance; it is the missing half of the release coupling.
 #
-# It only ever opens a PR. Publishing stays a deliberate act: merge, then tag.
+# It only ever opens a PR. Merging that PR is what publishes -- release.yml triggers on a
+# push to main touching CTXR_VERSION -- so the deliberate act is the merge, and there is no
+# separate tagging step to forget.
 name: Watch ctxr-cli
 
 on:
   schedule:
-    - cron: '23 7 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
 
 permissions:
