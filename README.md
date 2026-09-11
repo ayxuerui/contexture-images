@@ -22,9 +22,11 @@ RUN chmod +x /usr/local/bin/setup.sh
 ```
 
 The image deliberately declares no `ENTRYPOINT`, `CMD`, `EXPOSE`, `HEALTHCHECK` or `VOLUME` —
-those are deployment choices, and baking them in would silently override your compose file. It
-ships no provisioning script either: how a store gets cloned, authenticated and reconciled is
-policy, and it differs between deployments.
+those are deployment choices, and baking them in would silently override your compose file.
+
+It does ship `ctxr-provision`, but never runs it: clone, authenticate, verify, hand ownership to
+the runtime uid. Point a one-shot service at it and gate that service yourself. What differs
+between stores is passed in — see the script's header — rather than forked into a private copy.
 
 ## The tag is the ctxr version
 
@@ -65,6 +67,7 @@ which is where the real judgement belongs (does this ctxr match my store's `sche
 CTXR_VERSION                          the pin, single source of truth
 lib/install-contexture-toolchain.sh   gh + ctxr: what CONTEXTURE needs
 lib/install-agent-clis.sh             codex, agent-browser, claude, agy: what an AGENT needs
+lib/provision-store.sh                shipped as `ctxr-provision`: one-shot store setup
 harnesses/hermes/Dockerfile
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
 ```
