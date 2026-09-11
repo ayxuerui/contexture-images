@@ -8,7 +8,7 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` |
+| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` |
 
 ## Using it
 
@@ -59,7 +59,8 @@ which is where the real judgement belongs (does this ctxr match my store's `sche
 
 ```
 CTXR_VERSION                          the pin, single source of truth
-lib/install-contexture-toolchain.sh   gh + ctxr + smoke tests; the only cross-harness file
+lib/install-contexture-toolchain.sh   gh + ctxr: what CONTEXTURE needs
+lib/install-agent-clis.sh             codex, agent-browser, claude, agy: what an AGENT needs
 harnesses/hermes/Dockerfile
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
 ```

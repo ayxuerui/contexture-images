@@ -44,6 +44,17 @@ ARG CTXR_VERSION
 COPY lib/install-contexture-toolchain.sh /tmp/install-contexture-toolchain.sh
 RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
 
+# --- Agent CLIs ----------------------------------------------------------------------------
+# Other models and a browser driver, available to the agent's shell on every store running this
+# image rather than only the one whose own Dockerfile installed them. A skill that reaches for
+# `codex` or `claude` and does not find it cannot run at all.
+ARG CODEX_VERSION=0.153.0
+ARG AGENT_BROWSER_VERSION=0.26.0
+ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
+COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
+RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
+    && rm -f /tmp/install-agent-clis.sh
+
 # --- Hermes WebUI ---------------------------------------------------------------------------
 # Source only. `/apptoo` is the pristine tree upstream's image ships (their init rsyncs it to
 # /app at boot); nothing here needs that init, because this image already IS the agent -- the
@@ -93,8 +104,19 @@ RUN set -eux; \
 # an append, not a replacement: /opt/data must stay on it or the agent loses file-tool writes to
 # its own HERMES_HOME -- config.yaml, OAuth state, and HERMES_LAZY_INSTALL_TARGET all live there.
 #
-# A consumer needing a third root (e.g. /tmp) appends it in its own layer rather than here.
-ENV HERMES_WRITE_SAFE_ROOT=/opt/data:/store
+# /tmp is the third root, and it closes a trap rather than widening reach. The shell tool could
+# always write /tmp; only the native write_file/patch could not. An agent that hit that refusal
+# fell back to $HOME -- which for the in-process WebUI agent is /opt/data, a git repo whose
+# backup cron commits and pushes. Scratch that had nowhere legal to go ended up pushed to a
+# config repo, and the `auto: ignore ...` commits in that history are the whack-a-mole that
+# followed. Making the two write paths agree removes the reason to reach for $HOME at all.
+#
+# Deliberately NOT accompanied by TMPDIR, and that omission is load-bearing.
+# tools/environments/local.py::get_temp_dir() calls _prune_terminal_temp_once() ONLY on its
+# HERMES_HOME/cache/terminal branch. Setting TMPDIR selects an earlier branch that returns
+# without pruning, silently disabling the 72h sweep of hermes_bg_*.log and code-exec sandboxes
+# in a container that runs for weeks. Leave TMPDIR unset -- do not "complete" this later.
+ENV HERMES_WRITE_SAFE_ROOT=/opt/data:/store:/tmp
 
 # Deliberately NOT set here: EXPOSE, ENTRYPOINT, CMD, HEALTHCHECK, VOLUME. Every consumer drives
 # those from its own compose file, and baking them in would silently override a deployment's
