@@ -64,6 +64,47 @@ COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
     && rm -f /tmp/install-agent-clis.sh
 
+# --- chromium on PATH -----------------------------------------------------------------------
+# The base ships a Playwright chromium but never puts it on PATH, so `command -v chromium` finds
+# nothing. Skills that invoke it by bare name -- publish verification, HTML preview -- fail in
+# the container against a store that may already hold dozens of published pages. Same category
+# as the document-skill deps above: shipped by the base, named by a skill, unreachable without
+# this line.
+#
+# Resolved by GLOB, not hardcoded, on BOTH the directory and the binary name -- because neither
+# is stable across architectures. Playwright lays this out differently per platform:
+#
+#   arm64   chromium_headless_shell-<n>/chrome-linux/headless_shell
+#   amd64   chromium_headless_shell-<n>/chrome-headless-shell-linux64/chrome-headless-shell
+#
+# Matching only `headless_shell` built fine on arm64 and failed the amd64 leg with an empty
+# result -- caught by CI, which is the entire reason the amd64 leg exists. The build number also
+# moves whenever the base image's Playwright does, so a pinned path would rot into a dangling
+# symlink. Fails loudly if nothing matches rather than producing a broken link.
+#
+# headless_shell, not a full chromium: --dump-dom and --screenshot work, but there is no headful
+# mode or extension support. Anything needing a real browser session goes through a CDP endpoint.
+RUN set -eux; \
+    shell_bin="$(find /opt/hermes/.playwright -maxdepth 3 -type f \
+      \( -name headless_shell -o -name chrome-headless-shell \) -perm -u+x | head -1)"; \
+    test -n "$shell_bin"; \
+    ln -sf "$shell_bin" /usr/local/bin/chromium; \
+    chromium --version
+
+# --- Store provisioning ---------------------------------------------------------------------
+# Shipped as a tool, never run by this image. A deployment invokes it from a one-shot service
+# that it gates itself; nothing here has an entrypoint or decides when provisioning happens.
+#
+# It exists because every consumer had written the same script: the two that existed agreed on
+# eleven of thirteen steps, and had already drifted on the other two -- one wired git hooks and
+# the other did not, which is a silently weaker write gate rather than a deliberate difference.
+# What is genuinely per-store is expressed as input to it; see the script header.
+COPY lib/provision-store.sh /usr/local/bin/ctxr-provision
+RUN set -eux; \
+    chmod +x /usr/local/bin/ctxr-provision; \
+    sh -n /usr/local/bin/ctxr-provision; \
+    STORE_DIR=/nonexistent ctxr-provision 2>&1 | grep -q "REPO_URL is required"
+
 # --- Hermes WebUI ---------------------------------------------------------------------------
 # Source only. `/apptoo` is the pristine tree upstream's image ships (their init rsyncs it to
 # /app at boot); nothing here needs that init, because this image already IS the agent -- the
