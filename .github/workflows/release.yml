@@ -20,7 +20,13 @@ name: Release
 on:
   push:
     branches: [main]
-    paths: ['CTXR_VERSION']
+    # Anything that changes what lands IN the image, not just the ctxr pin. Keying this on
+    # CTXR_VERSION alone was wrong: a new tool, a newer base image or a WebUI bump changes the
+    # artifact without touching that file, so the change would sit on main and never publish.
+    paths:
+      - 'CTXR_VERSION'
+      - 'harnesses/**'
+      - 'lib/**'
   workflow_dispatch:
     inputs:
       ctxr_version:
