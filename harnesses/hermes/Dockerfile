@@ -35,6 +35,15 @@ FROM ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_VERSION} AS webui-src
 
 FROM ${HERMES_AGENT_IMAGE}
 
+# --- Runtime PATH ----------------------------------------------------------------------------
+# The base image's own ENV PATH already puts /opt/hermes/bin and /opt/hermes/.venv/bin first,
+# but Debian's /etc/profile unconditionally overwrites PATH for non-root users (see the comment
+# in the dropped-in script for the exact mechanism and why it silently breaks every agent
+# session, not just an interactive login). /etc/profile.d is empty in the base image, so this is
+# a pure addition, not a race with anything already there.
+COPY harnesses/hermes/profile.d/10-hermes-path.sh /etc/profile.d/10-hermes-path.sh
+RUN chmod +r /etc/profile.d/10-hermes-path.sh
+
 # --- Contexture toolchain -----------------------------------------------------------------
 # gh + ctxr-cli, with their smoke tests, in one layer. Harness-agnostic by construction: this
 # is the only file shared with any other harness image in this repo. See the script's header
@@ -82,6 +91,46 @@ RUN set -eux; \
     touch /etc/s6-overlay/s6-rc.d/user/contents.d/webui; \
     test -f /etc/s6-overlay/s6-rc.d/webui/type; \
     test -f /etc/s6-overlay/s6-rc.d/webui/dependencies.d/base
+
+# --- Bundled document-skill Python deps -----------------------------------------------------
+# The agent's bundled productivity skills (pdf, docx, xlsx, powerpoint) name these as
+# prerequisites in their own SKILL.md, but none of them ship in the upstream agent venv. Absent
+# this layer, an agent hitting any of the four falls back to a per-task venv under /tmp -- the
+# venv is root-owned by design (see Write safety, below) so the agent can't repair it -- which
+# is disposable, repeated on every session, and exactly what this store's own runbooks tell an
+# agent not to do. Installing them here, once, in the shared venv is the durable fix.
+#
+# Same pattern as the WebUI install above: pinned versions, one layer, import smoke test in the
+# same RUN so a broken or yanked release fails the build instead of a live session.
+#
+# The base image's /opt/hermes/pyproject.toml sets `exclude-newer = "14 days"` (a rolling
+# supply-chain quarantine against a just-published/compromised release) and `uv` auto-discovers
+# it from this layer's cwd (WORKDIR /opt/hermes, inherited from the base). Pin the latest release
+# of each package that is already >14 days old as of this writing (2026-09-11) rather than
+# fighting the quarantine -- an exact pin only needs to clear that floor once; it never ages
+# backward. Bumping any of these to a release still inside the 14-day window will fail the build
+# with "No solution found ... there is no version of X==Y" (uv's phrasing for "quarantined", not
+# "does not exist" -- same trap the base file documents for its own deps).
+ARG PYPDF_VERSION=6.16.2
+ARG REPORTLAB_VERSION=5.0.1
+ARG PDFPLUMBER_VERSION=0.11.10
+ARG PYPDFIUM2_VERSION=5.13.0
+ARG PYTHON_DOCX_VERSION=1.2.0
+ARG OPENPYXL_VERSION=3.1.5
+ARG PYTHON_PPTX_VERSION=1.0.2
+ARG BEAUTIFULSOUP4_VERSION=4.15.0
+RUN set -eux; \
+    uv pip install --python /opt/hermes/.venv/bin/python \
+      "pypdf==${PYPDF_VERSION}" \
+      "reportlab==${REPORTLAB_VERSION}" \
+      "pdfplumber==${PDFPLUMBER_VERSION}" \
+      "pypdfium2==${PYPDFIUM2_VERSION}" \
+      "python-docx==${PYTHON_DOCX_VERSION}" \
+      "openpyxl==${OPENPYXL_VERSION}" \
+      "python-pptx==${PYTHON_PPTX_VERSION}" \
+      "beautifulsoup4==${BEAUTIFULSOUP4_VERSION}"; \
+    /opt/hermes/.venv/bin/python -c \
+      "import pypdf, reportlab, pdfplumber, pypdfium2, docx, openpyxl, pptx, bs4"
 
 # --- Write safety ---------------------------------------------------------------------------
 # The base image ships HERMES_WRITE_SAFE_ROOT=/opt/data, and agent/file_safety.py restricts the
