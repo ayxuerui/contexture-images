@@ -27,8 +27,29 @@ case "${HERMES_WEBUI_ENABLED:-}" in
 esac
 
 # with-contenv repopulates HOME from /init as /root. Reset it before dropping privileges so
-# HOME-anchored state lands under /opt/data — same reason the dashboard service does this.
-export HOME=/opt/data
+# HOME-anchored state lands on the data volume — same reason the dashboard service does this.
+#
+# /opt/data/home, NOT /opt/data itself. $HERMES_HOME is the agent's config directory and, on
+# every deployment we know of, a git repo with a backup cron. Pointing the in-process agent's
+# `~` at it means agent scratch is written INTO that repo by default, and at least one store
+# has published exactly that — research dumps and stray scripts committed and pushed before
+# anyone noticed. That store now defends itself with an allowlist .gitignore, which works, but
+# it is catching the problem rather than preventing it.
+#
+# /opt/data/home is where Hermes already points tool subprocesses (its documented Docker
+# layout: "Hermes tool calls read ~ as /opt/data/home"). Using it here makes the in-process
+# WebUI agent and the tool subprocesses agree on what `~` means, which they previously did not
+# — the same agent got two different homes depending on which surface invoked it.
+#
+# Safe for the WebUI's own state: every Path.home() in its source is a FALLBACK for HERMES_HOME
+# (api/routes.py), and both HERMES_HOME and HERMES_WEBUI_STATE_DIR are set explicitly by the
+# deployment. Verified against a live container — nothing the server itself persists is
+# $HOME-derived, so this moves the agent's `~` and nothing else.
+#
+# Created defensively: a provisioning script normally makes it, but a deployment that skips one
+# would otherwise have the server start with a $HOME that does not exist.
+export HOME=/opt/data/home
+[ -d "$HOME" ] || { mkdir -p "$HOME" && chown "${PUID:-10000}:${PGID:-10000}" "$HOME"; }
 
 # Where the agent lives in THIS image. Not optional and not a deployment choice: the WebUI
 # resolves the agent by PATH, not by import (api/config.py::_discover_agent_dir), and none
