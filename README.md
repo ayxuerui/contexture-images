@@ -47,6 +47,10 @@ off it:
    `CTXR_VERSION` — merging is a user push, so it fires normally.
 4. After every leg succeeds, a `v<version>` tag is created as a record of what shipped.
 
+`:<version>` names the ctxr inside the image and moves when the image is rebuilt — a new tool
+or a newer base republishes it. `:<version>-<sha>` is the immutable handle if you need one. The
+build asserts the ctxr version either way, so the tag never lies about what it carries.
+
 The tag is an output, not an input. It has to be: a tag pushed by a workflow using
 `GITHUB_TOKEN` does not trigger other workflows, so tagging could never have been what causes a
 publish. `workflow_dispatch` remains available to rebuild a version by hand.
