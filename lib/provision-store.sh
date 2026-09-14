@@ -29,15 +29,17 @@ PGID="${PGID:-10000}"
 
 log() { echo "[ctxr-provision] $*"; }
 
-# Two layers guard re-provisioning, and both matter. A deployment gates this behind something
+# Two layers guard re-PROVISIONING, and both matter. A deployment gates this behind something
 # like compose `profiles:` so a plain `up` never calls it; the sentinel then keeps even a
 # deliberate re-run from re-provisioning over live agent work -- which matters on platforms
 # that have no `profiles` equivalent and re-run a release command on every deploy.
-if [ -f "$SENTINEL" ]; then
-  log "sentinel present ($SENTINEL) - store already provisioned, skipping."
-  exit 0
-fi
-
+#
+# The sentinel is checked AFTER the checkout is refreshed, not before. Gating the whole script
+# on it made the pull below unreachable for the entire life of a deployment: a store provisioned
+# once could never advance again, and an operator who merged a change and re-ran this saw it
+# exit 0 having done nothing. Observed on a live store sitting three merges behind main with no
+# mechanism left to move it. Refreshing a clone is not provisioning, and the pull carries its own
+# guard against clobbering live work.
 : "${REPO_URL:?REPO_URL is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GIT_USER_NAME:?GIT_USER_NAME is required}"
@@ -94,6 +96,16 @@ if [ -d "$STORE/.git" ]; then
 else
   log "cloning $REPO_URL into $STORE"
   git clone "$REPO_URL" "$STORE"
+fi
+
+# Everything above is refresh; everything below is provisioning. A store that has been
+# provisioned takes the handover and stops here -- the chown matters because the fetch above ran
+# as root, and a root-owned object under .git is one the agent cannot write on its next commit.
+if [ -f "$SENTINEL" ]; then
+  chown -R "${PUID}:${PGID}" "$STORE" 2>/dev/null || log "WARNING: chown $STORE failed."
+  chown -R "${PUID}:${PGID}" "$HOME"  2>/dev/null || log "WARNING: chown $HOME failed."
+  log "sentinel present ($SENTINEL) - already provisioned; refreshed the checkout only."
+  exit 0
 fi
 
 # Decided from the store's state, not from a per-deployment flag. `ctxr init` against an
