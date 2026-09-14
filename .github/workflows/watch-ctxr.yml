@@ -6,9 +6,9 @@
 # habit — and a drifted pin is precisely the failure that has taken these deployments down
 # before. So this is not optional maintenance; it is the missing half of the release coupling.
 #
-# It only ever opens a PR. Merging that PR is what publishes -- release.yml triggers on a
-# push to main touching CTXR_VERSION -- so the deliberate act is the merge, and there is no
-# separate tagging step to forget.
+# It only ever opens a PR. Merging that PR is what publishes -- release.yml triggers on a push
+# to main touching CTXR_VERSION (among other image inputs) -- so the deliberate act is the
+# merge, and there is no separate tagging step to forget.
 name: Watch ctxr-cli
 
 on:
@@ -76,7 +76,10 @@ jobs:
 
             CI builds this branch, and the build asserts the installed `ctxr --version` equals
             the pin — so a green check here means the new version installs and runs in the
-            image. Merging does not publish; tag the merge commit to do that.
+            image. **Merging is what publishes** — release.yml triggers on a push to main
+            touching CTXR_VERSION, so merging this builds and pushes every harness image.
+            There is no separate tagging step to remember; the tag is written afterwards, as
+            a record of what shipped rather than as the thing that causes it.
 
             **Before merging, check the consuming stores.** Since ctxr 0.10.0 the schema gate is
             both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
