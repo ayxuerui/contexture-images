@@ -85,18 +85,41 @@ fi
 unset _gh_token
 gh auth setup-git
 
+# >>> refresh-block (lib/tests/provision-refresh-test.sh extracts between these markers and
+# runs it against real repositories; keep them around exactly the refresh logic) >>>
+# This script runs as root; the store it is refreshing was chowned to PUID:PGID by its own
+# first run. Git refuses to operate on a repository owned by another user ("detected dubious
+# ownership"), so every command against an ALREADY-PROVISIONED store needs the exception --
+# without it the refresh above this line is unreachable for the entire life of a deployment,
+# which is the same class of bug the sentinel comment describes and a re-run of the same
+# mistake. Scoped to this invocation rather than written into global config: the exception is
+# true of this one path, for this one script, and leaving it in ~/.gitconfig would quietly
+# extend it to every other repository root ever mounted here.
+store_git() { git -c safe.directory="$STORE" -C "$STORE" "$@"; }
+
 if [ -d "$STORE/.git" ]; then
   log "existing checkout at $STORE"
-  if [ -n "$(git -C "$STORE" status --porcelain)" ]; then
+  # Fails CLOSED. `git status` writes its errors to stderr and nothing to stdout, so testing
+  # the substitution alone cannot tell "clean" from "could not read the store" -- an unreadable
+  # store looked exactly like a clean one and fell through to the pull. The guard exists to
+  # keep in-flight agent work from being clobbered, and a guard that cannot see is worse than
+  # no guard, because it reports safety it never checked.
+  if ! store_status="$(store_git status --porcelain 2>&1)"; then
+    log "ERROR: cannot read the store's git status, so it is not safe to pull:"
+    log "  $store_status"
+    exit 1
+  fi
+  if [ -n "$store_status" ]; then
     log "store is dirty - skipping pull so in-flight agent work is never clobbered."
   else
     log "pulling (fast-forward only)"
-    git -C "$STORE" pull --ff-only
+    store_git pull --ff-only
   fi
 else
   log "cloning $REPO_URL into $STORE"
   git clone "$REPO_URL" "$STORE"
 fi
+# <<< refresh-block <<<
 
 # Everything above is refresh; everything below is provisioning. A store that has been
 # provisioned takes the handover and stops here -- the chown matters because the fetch above ran
