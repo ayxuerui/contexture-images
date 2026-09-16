@@ -14,6 +14,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The provisioner guards live store content, and its refresh path has now failed twice by
+  # doing nothing visible. Runs before the image build because it needs no image -- only git,
+  # root, and a few seconds -- so a broken refresh is reported in under a minute rather than
+  # after a 45-minute matrix.
+  provision:
+    name: provision refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Root and a foreign-owned checkout are the point of the test, not an accident of the
+      # environment: the production failure only appears when the store belongs to another uid.
+      - name: Run the refresh regression tests
+        run: sudo sh lib/tests/provision-refresh-test.sh
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest
