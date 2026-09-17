@@ -229,6 +229,14 @@ google_oauth_pending.json
 google_oauth_last_url.txt
 mcp-tokens/
 home/.config/gh/hosts.yml
+# Backup credentials. rclone.conf holds an OAuth REFRESH token for the backup destination, and
+# .restic-password decrypts every snapshot -- between them they are full read/write access to
+# the disaster-recovery copy. Both are only incidentally caught by the broad rules above (a root
+# entry, and home/*); naming them is the point of this block.
+rclone.conf
+home/.config/rclone/
+.restic-password
+.restic-password.*
 home/.claude/.credentials.json
 home/.codex/auth.json
 home/.gemini/oauth_creds.json

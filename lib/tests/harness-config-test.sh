@@ -88,7 +88,8 @@ done
 echo "== the allowlist ignores what it claims =="
 for p in .env auth.json .git-credentials google_token.json mcp-tokens/cb.json \
          home/.config/gh/hosts.yml home/.claude/.credentials.json home/.codex/auth.json \
-         home/.gemini/oauth_creds.json state.db state.db-wal checkpoints/a \
+         home/.gemini/oauth_creds.json home/.config/rclone/rclone.conf \
+         .restic-password state.db state.db-wal checkpoints/a \
          state-snapshots/s/state.db lazy-packages/x.so skills/bundled/S.md \
          sessions/request_dump_1.json webui/sessions/_run_journal/a.jsonl \
          profiles/leilei/.env cron/executions.db logs/a.log node/x bin/y; do
@@ -121,7 +122,7 @@ stage .
 check "clean staged set exits 0" "$(guard)" "0"
 
 echo "== the commit guard refuses credential files =="
-for secret in .env auth.json .git-credentials google_token.json; do
+for secret in .env auth.json .git-credentials google_token.json .restic-password; do
   mkrepo; printf 'x' > "$WORK/repo/$secret"; stage "$secret"
   check "refuses $secret" "$(guard)" "1"
 done
@@ -129,6 +130,8 @@ mkrepo; mkdir -p "$WORK/repo/home/.config/gh"; printf 'x' > "$WORK/repo/home/.co
 check "refuses nested home/.config/gh/hosts.yml" "$(guard)" "1"
 mkrepo; mkdir -p "$WORK/repo/mcp-tokens"; printf 'x' > "$WORK/repo/mcp-tokens/cb.json"; stage .
 check "refuses mcp-tokens/" "$(guard)" "1"
+mkrepo; mkdir -p "$WORK/repo/home/.config/rclone"; printf 'x' > "$WORK/repo/home/.config/rclone/rclone.conf"; stage .
+check "refuses rclone.conf (holds a refresh token)" "$(guard)" "1"
 mkrepo; mkdir -p "$WORK/repo/profiles/leilei"; printf 'x' > "$WORK/repo/profiles/leilei/auth.json"; stage .
 check "refuses profiles/<name>/auth.json" "$(guard)" "1"
 

@@ -135,7 +135,8 @@ harness_config_commit_guard() {   # $1 = repo dir, $2 = max blob MB
       .env|.env.*|auth.json|auth.lock|.git-credentials|.netrc|.npmrc|\
       google_token.json|google_client_secret.json|google_oauth_pending.json|\
       google_oauth_last_url.txt|hosts.yml|.credentials.json|oauth_creds.json|\
-      google_accounts.json|antigravity-oauth-token|id_rsa|id_ed25519|*.pem)
+      google_accounts.json|antigravity-oauth-token|id_rsa|id_ed25519|*.pem|\
+      rclone.conf|.restic-password|.restic-password.*)
         case "$_base" in .env.example) ;; *) echo "SECRET|$_p" ;; esac ;;
     esac
     case "$_p" in
