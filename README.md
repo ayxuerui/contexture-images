@@ -92,6 +92,73 @@ It does ship `ctxr-provision`, but never runs it: clone, authenticate, verify, h
 the runtime uid. Point a one-shot service at it and gate that service yourself. What differs
 between stores is passed in — see the script's header — rather than forked into a private copy.
 
+## Pointing `harness-backup` at Google Drive
+
+restic speaks S3, B2, Azure, GCS, SFTP and REST natively — if your destination is one of those,
+set `HARNESS_BACKUP_DESTINATION` to the restic URL and skip this section. Google Drive is
+reached through rclone instead, which is why `rclone` ships alongside `restic`.
+
+**Make your own OAuth client.** rclone's built-in client ID is shared by every rclone user
+globally and is rate-limited accordingly. In Google Cloud Console: new project → enable the
+**Google Drive API** → configure the OAuth consent screen → Credentials → **Create OAuth client
+ID → Desktop app**.
+
+**Get a token, once, from a machine with a browser.** The container has none, and OAuth consent
+cannot be automated:
+
+```sh
+rclone authorize "drive" "<client-id>" "<client-secret>"
+```
+
+That prints a JSON blob containing the refresh token. Use scope `drive.file` when prompted —
+rclone then sees only the files it created itself, which is all a backup ever needs and makes a
+leaked token far less interesting than one with full Drive access.
+
+**Configure the remote from the environment, not a config file:**
+
+```sh
+RCLONE_CONFIG_GDRIVE_TYPE=drive
+RCLONE_CONFIG_GDRIVE_CLIENT_ID=<id>.apps.googleusercontent.com
+RCLONE_CONFIG_GDRIVE_CLIENT_SECRET=<secret>
+RCLONE_CONFIG_GDRIVE_SCOPE=drive.file
+RCLONE_CONFIG_GDRIVE_TOKEN={"access_token":"...","refresh_token":"...","expiry":"..."}
+
+HARNESS_BACKUP_DESTINATION=rclone:gdrive:harness-backup/<store>
+```
+
+`RCLONE_CONFIG_<NAME>_<KEY>` defines a whole remote with no `rclone.conf` on disk at all. Note
+it is `RCLONE_CONFIG_GDRIVE_*`, which names a remote — not `RCLONE_DRIVE_*`, which only sets
+backend defaults and still needs a config file to name the remote.
+
+**Environment rather than `rclone.conf` is deliberate.** A config file would live at
+`$HERMES_HOME/home/.config/rclone/rclone.conf` — *inside the directory being backed up*. That is
+a chicken-and-egg failure on the day you need it: reaching the backup requires credentials whose
+only copy went down with the volume. The same reasoning applies to
+`HARNESS_BACKUP_PASSWORD_FILE`; keep both wherever your deployment keeps its other secrets, and
+a copy somewhere a dead machine cannot take with it.
+
+The trade is that rclone cannot write a refreshed access token back to an env-defined remote, so
+it re-derives one from the refresh token on every run and logs a NOTICE saying so. Google's
+refresh tokens are durable, so this is noise rather than a problem — but if one is ever revoked,
+you repeat the `rclone authorize` step.
+
+**Scope these to the backup invocation, never to the gateway.** In a long-running container's
+environment, the client secret and refresh token are readable by every shell command the agent
+runs. That is the same argument that keeps `GH_TOKEN` off the gateway and gives it only to the
+one-shot that runs `ctxr-provision`; a scheduled `harness-backup` should be gated the same way.
+
+**One tuning knob worth setting for Drive.** Google throttles per-user API calls far harder than
+object storage does, and restic's default 16 MiB pack size turns a ~2 GB archive into well over
+a hundred uploads. `restic` reads this from its own environment, so no extra plumbing is needed:
+
+```sh
+RESTIC_PACK_SIZE=64        # MiB, restic's maximum is 128
+```
+
+Set it before the first snapshot — it applies to newly written packs only, so a repository that
+started at the default keeps its existing packs. The cost is that a restore fetches in coarser
+chunks than it strictly needs.
+
 ## The tag is the ctxr version
 
 `contexture-hermes:0.10.0` contains `ctxr-cli@0.10.0`, and the build fails if that is not true.
