@@ -8,7 +8,7 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` |
+| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` + `restic`, `rclone` |
 
 ## Using it
 
@@ -24,9 +24,140 @@ RUN chmod +x /usr/local/bin/setup.sh
 The image deliberately declares no `ENTRYPOINT`, `CMD`, `EXPOSE`, `HEALTHCHECK` or `VOLUME` —
 those are deployment choices, and baking them in would silently override your compose file.
 
+## Backing up the harness home
+
+A Contexture store is version-controlled by definition. The harness home it runs against —
+`$HERMES_HOME`, the agent's `config.yaml`, `SOUL.md`, `cron/jobs.json`, `user-skills/`, every
+chat transcript and all of its credentials — is not. Two commands cover it, and they are not
+redundant:
+
+| | `harness-config-push` | `harness-backup` |
+|---|---|---|
+| Destination | a private git repo (`HARNESS_CONFIG_REPO`) | a restic repository (`HARNESS_BACKUP_DESTINATION`) |
+| Purpose | track config, so it can be **diffed** | disaster recovery |
+| Credentials | never — excluded by the allowlist and by a guard | yes, encrypted at rest |
+| Restore | `git clone`, human-readable, no password | `restic restore` → `hermes import <zip>` |
+
+Restoring from the git repo alone gives you a harness that cannot authenticate to anything.
+A restic repository cannot tell you what changed in `SOUL.md` last week. Run both, or pick the
+one whose failure you can live with.
+
+Like `ctxr-provision`, these ship but never run — scheduling is a deployment choice. Absence of
+the destination variable is the off switch, so an unconfigured store does nothing.
+
+**`harness-backup` archives through `hermes backup`, not the live tree**, and that is the
+central decision. Hermes copies every `*.db` with `sqlite3.backup()` — a consistent image even
+under a live writer — and deliberately omits the `.db-wal`/`.db-shm` sidecars, because pairing
+a fresh main file with stale sidecar state produces a torn restore. A file-level snapshot of a
+gigabyte-scale live `state.db` backs up exactly that torn pair. Going through hermes' own format
+also means restoring with `hermes import`, which refuses to overwrite `gateway_state.json` and
+`processes.json` — restore those onto a different host and the gateway comes up stuck
+"starting".
+
+The wrapper exists for one reason beyond glue: it **asserts the archive contains a usable
+`state.db`**. Hermes' snapshot helper fails closed on a ten-second lock deadline, and the caller
+then logs and continues — so a contended database is simply absent from an archive that still
+exits 0. Without the assertion you get a green status over a backup that cannot restore, which
+is the failure this whole thing replaces.
+
+**The allowlist ships as an image artifact.** `harness-config-push` renders
+`hermes-config.gitignore` into the home it tracks: ignore everything, then re-open only durable
+state. A denylist loses every time a new root entry appears — and since `$HERMES_HOME` was once
+`$HOME` for the in-process WebUI agent, "a new root entry" meant agent scratch, published before
+anyone noticed. Extend it with `HARNESS_CONFIG_INCLUDE` / `HARNESS_CONFIG_EXCLUDE`; don't fork
+it. A home whose `.gitignore` lacks the managed marker is left untouched, so adopting the
+command changes no policy on day one.
+
+Two guards, doing different jobs. The **commit guard** refuses staged credential *files*,
+oversize blobs (a repo with a 100 MB blob can never be pushed again) and gitlinks with no
+`.gitmodules` (they restore as empty directories and say nothing). The **visibility gate**
+refuses a public remote, because transcripts and `SOUL.md` go up verbatim and no path-matching
+guard can read what is inside them. Neither substitutes for the other, and neither remediates —
+they refuse, leave the index alone, and fail the same way next run.
+
+```sh
+HARNESS_CONFIG_REPO=https://github.com/you/harness-config.git \
+  HARNESS_CONFIG_DRY_RUN=1 harness-config-push    # what WOULD be committed
+
+HARNESS_BACKUP_DESTINATION=rclone:gdrive:harness/pkm harness-backup
+```
+
+`restic` speaks S3, B2, Azure, GCS, SFTP and REST natively; `rclone` is shipped alongside so a
+destination it doesn't speak — Google Drive, Dropbox, OneDrive — is reachable as
+`rclone:remote:path`. Generate `rclone.conf` and the repository password outside the container:
+OAuth cannot be completed in one, and a password whose only copy lives in the directory being
+backed up is not a password.
+
 It does ship `ctxr-provision`, but never runs it: clone, authenticate, verify, hand ownership to
 the runtime uid. Point a one-shot service at it and gate that service yourself. What differs
 between stores is passed in — see the script's header — rather than forked into a private copy.
+
+## Pointing `harness-backup` at Google Drive
+
+restic speaks S3, B2, Azure, GCS, SFTP and REST natively — if your destination is one of those,
+set `HARNESS_BACKUP_DESTINATION` to the restic URL and skip this section. Google Drive is
+reached through rclone instead, which is why `rclone` ships alongside `restic`.
+
+**Make your own OAuth client.** rclone's built-in client ID is shared by every rclone user
+globally and is rate-limited accordingly. In Google Cloud Console: new project → enable the
+**Google Drive API** → configure the OAuth consent screen → Credentials → **Create OAuth client
+ID → Desktop app**.
+
+**Get a token, once, from a machine with a browser.** The container has none, and OAuth consent
+cannot be automated:
+
+```sh
+rclone authorize "drive" "<client-id>" "<client-secret>"
+```
+
+That prints a JSON blob containing the refresh token. Use scope `drive.file` when prompted —
+rclone then sees only the files it created itself, which is all a backup ever needs and makes a
+leaked token far less interesting than one with full Drive access.
+
+**Configure the remote from the environment, not a config file:**
+
+```sh
+RCLONE_CONFIG_GDRIVE_TYPE=drive
+RCLONE_CONFIG_GDRIVE_CLIENT_ID=<id>.apps.googleusercontent.com
+RCLONE_CONFIG_GDRIVE_CLIENT_SECRET=<secret>
+RCLONE_CONFIG_GDRIVE_SCOPE=drive.file
+RCLONE_CONFIG_GDRIVE_TOKEN={"access_token":"...","refresh_token":"...","expiry":"..."}
+
+HARNESS_BACKUP_DESTINATION=rclone:gdrive:harness-backup/<store>
+```
+
+`RCLONE_CONFIG_<NAME>_<KEY>` defines a whole remote with no `rclone.conf` on disk at all. Note
+it is `RCLONE_CONFIG_GDRIVE_*`, which names a remote — not `RCLONE_DRIVE_*`, which only sets
+backend defaults and still needs a config file to name the remote.
+
+**Environment rather than `rclone.conf` is deliberate.** A config file would live at
+`$HERMES_HOME/home/.config/rclone/rclone.conf` — *inside the directory being backed up*. That is
+a chicken-and-egg failure on the day you need it: reaching the backup requires credentials whose
+only copy went down with the volume. The same reasoning applies to
+`HARNESS_BACKUP_PASSWORD_FILE`; keep both wherever your deployment keeps its other secrets, and
+a copy somewhere a dead machine cannot take with it.
+
+The trade is that rclone cannot write a refreshed access token back to an env-defined remote, so
+it re-derives one from the refresh token on every run and logs a NOTICE saying so. Google's
+refresh tokens are durable, so this is noise rather than a problem — but if one is ever revoked,
+you repeat the `rclone authorize` step.
+
+**Scope these to the backup invocation, never to the gateway.** In a long-running container's
+environment, the client secret and refresh token are readable by every shell command the agent
+runs. That is the same argument that keeps `GH_TOKEN` off the gateway and gives it only to the
+one-shot that runs `ctxr-provision`; a scheduled `harness-backup` should be gated the same way.
+
+**One tuning knob worth setting for Drive.** Google throttles per-user API calls far harder than
+object storage does, and restic's default 16 MiB pack size turns a ~2 GB archive into well over
+a hundred uploads. `restic` reads this from its own environment, so no extra plumbing is needed:
+
+```sh
+RESTIC_PACK_SIZE=64        # MiB, restic's maximum is 128
+```
+
+Set it before the first snapshot — it applies to newly written packs only, so a repository that
+started at the default keeps its existing packs. The cost is that a restore fetches in coarser
+chunks than it strictly needs.
 
 ## The tag is the ctxr version
 
@@ -67,8 +198,13 @@ which is where the real judgement belongs (does this ctxr match my store's `sche
 CTXR_VERSION                          the pin, single source of truth
 lib/install-contexture-toolchain.sh   gh + ctxr: what CONTEXTURE needs
 lib/install-agent-clis.sh             codex, agent-browser, claude, agy: what an AGENT needs
+lib/install-backup-tools.sh           restic + rclone: what a BACKUP needs
 lib/provision-store.sh                shipped as `ctxr-provision`: one-shot store setup
+lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
+lib/tests/                            marker-extracted guard tests; CI runs them before the build
 harnesses/hermes/Dockerfile
+harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
+harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
 ```
 

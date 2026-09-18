@@ -64,6 +64,16 @@ COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
     && rm -f /tmp/install-agent-clis.sh
 
+# --- Backup tooling ------------------------------------------------------------------------
+# restic (+ rclone as its reach extender) for snapshotting the harness home. Harness-agnostic
+# like the toolchain layer: any long-lived harness has state worth snapshotting, and restic is
+# the part of that with no harness-specific knowledge in it. WHAT goes in a snapshot is
+# harness-specific and lives in harness-backup, below.
+ARG RESTIC_VERSION=0.19.1
+ARG RCLONE_VERSION=1.75.1
+COPY lib/install-backup-tools.sh /tmp/install-backup-tools.sh
+RUN /tmp/install-backup-tools.sh && rm -f /tmp/install-backup-tools.sh
+
 # --- chromium on PATH -----------------------------------------------------------------------
 # The base ships a Playwright chromium but never puts it on PATH, so `command -v chromium` finds
 # nothing. Skills that invoke it by bare name -- publish verification, HTML preview -- fail in
@@ -104,6 +114,40 @@ RUN set -eux; \
     chmod +x /usr/local/bin/ctxr-provision; \
     sh -n /usr/local/bin/ctxr-provision; \
     STORE_DIR=/nonexistent ctxr-provision 2>&1 | grep -q "REPO_URL is required"
+
+# --- Harness home backup --------------------------------------------------------------------
+# Two commands, two blast radii, shipped and never run -- same contract as ctxr-provision.
+#
+#   harness-config-push   commits $HERMES_HOME's CONFIG to a private git remote, so it can be
+#                         DIFFED. Carries no credentials, by design.
+#   harness-backup        snapshots the whole home to a restic destination, credentials
+#                         included and encrypted. This is the recovery path.
+#
+# They are not redundant: restoring from the git repo alone yields a harness that cannot
+# authenticate to anything, and a restic repository cannot tell you what changed in SOUL.md
+# last week.
+#
+# They are NOT `ctxr-*`. ctxr-provision earns that prefix because it clones a Contexture store
+# and runs `ctxr init`/`doctor`; these two touch no store, so the prefix would be a false
+# contract. Nor are they `hermes-backup` -- one space from the `hermes backup` this very script
+# invokes is a footgun in a cron line.
+#
+# The allowlist is an image artifact rather than something each store hand-grows, for the same
+# reason the provisioner is: the 277-line original it was generalized from grew one
+# `auto: ignore ...` commit at a time, each landing AFTER something had already been pushed.
+# A store extends it through HARNESS_CONFIG_INCLUDE/EXCLUDE; it never forks it.
+COPY harnesses/hermes/hermes-config.gitignore /usr/local/share/contexture/hermes-config.gitignore
+COPY lib/config-push.sh /usr/local/bin/harness-config-push
+COPY harnesses/hermes/harness-backup.sh /usr/local/bin/harness-backup
+RUN set -eux; \
+    chmod +x /usr/local/bin/harness-config-push /usr/local/bin/harness-backup; \
+    sh -n /usr/local/bin/harness-config-push; \
+    sh -n /usr/local/bin/harness-backup; \
+    test -s /usr/local/share/contexture/hermes-config.gitignore; \
+    grep -q '@HARNESS_CONFIG_EXTENSIONS@' /usr/local/share/contexture/hermes-config.gitignore; \
+    grep -q 'harness-config-push managed allowlist' /usr/local/share/contexture/hermes-config.gitignore; \
+    HERMES_DATA_DIR=/nonexistent harness-config-push 2>&1 | grep -q "HARNESS_CONFIG_REPO is required"; \
+    HERMES_DATA_DIR=/nonexistent harness-backup 2>&1 | grep -q "HARNESS_BACKUP_DESTINATION is required"
 
 # --- Hermes WebUI ---------------------------------------------------------------------------
 # Source only. `/apptoo` is the pristine tree upstream's image ships (their init rsyncs it to

@@ -31,6 +31,22 @@ jobs:
       - name: Run the refresh regression tests
         run: sudo sh lib/tests/provision-refresh-test.sh
 
+  # Same reasoning as the job above, for the other pair of guards that fail silently: an
+  # allowlist that stopped ignoring a credential, and an archive verifier that stopped noticing
+  # a `hermes backup` with no state.db in it. Both produce a green run and a broken backup.
+  backup-guards:
+    name: backup guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Root against a foreign-owned repo is the production shape, not an accident of the
+      # environment -- the same condition that has broken the provisioner's refresh twice.
+      - name: Run the backup guard regression tests
+        run: sudo sh lib/tests/harness-config-test.sh
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest
