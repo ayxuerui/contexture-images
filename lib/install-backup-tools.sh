@@ -19,6 +19,23 @@
 # a backup job at 03:00. `apt-get install restic=<ver>` cannot offer that for long, because
 # Debian drops superseded binaries from the mirror and the rebuild then fails.
 #
+# Both projects publish SHA256SUMS beside the assets, and both are checked below. That is a
+# weaker anchor than it looks -- the sums come from the same release as the binary, so it
+# catches a corrupted or substituted ASSET but not a compromised release -- and it is still
+# strictly more than HTTPS alone. restic also signs SHA256SUMS with GPG; verifying that would
+# need a trusted key baked into the image, which is a key-management problem this script is the
+# wrong place to solve.
+#
+# The official installers were considered and rejected. rclone's `curl https://rclone.org/
+# install.sh | sudo bash` takes exactly one optional argument, `beta` -- it reads
+# downloads.rclone.org/version.txt and always installs CURRENT, so the image's rclone would
+# move on every rebuild with no record of what changed. restic publishes no install script at
+# all; its `self-update` is a post-install updater that also goes to latest. install-agent-clis
+# already carries two unpinned curl|bash installers and apologises for them in a comment,
+# because claude and agy ship no versioned artifact. rclone and restic do, so taking the
+# unpinned path here would trade away the version assertion for nothing -- and for a BACKUP
+# tool, knowing which version wrote the repository is the whole point.
+#
 # Extraction is done with python's stdlib rather than bzip2/unzip/dpkg. Neither bzip2 nor unzip
 # is on these bases (checked), so the alternative was apt-get install + purge around a single
 # decompression. Using python also leaves this script with no Debian dependency at all, which is
@@ -46,7 +63,20 @@ restic_version="$RESTIC_VERSION"
 rclone_version="$RCLONE_VERSION"
 unset RESTIC_VERSION RCLONE_VERSION
 
-command -v curl >/dev/null 2>&1 || fail "needs curl on the base image"
+command -v curl      >/dev/null 2>&1 || fail "needs curl on the base image"
+command -v sha256sum >/dev/null 2>&1 || fail "needs sha256sum to verify the release assets"
+
+# Fetch SHA256SUMS from a release and assert one file against it. Fails closed on every branch:
+# a sums file that does not list the asset is as fatal as a mismatch, because "not mentioned"
+# and "does not match" are the same amount of evidence.
+verify_sha256() {   # $1 = sums URL, $2 = file on disk, $3 = name as it appears in the sums file
+  _want="$(curl -fsSL "$1" | awk -v n="$3" '$2 == n || $2 == "*" n { print $1; exit }')"
+  [ -n "${_want}" ] || fail "$3 is not listed in $1"
+  _got="$(sha256sum "$2" | awk '{print $1}')"
+  [ "${_want}" = "${_got}" ] \
+    || fail "checksum mismatch for $3: expected ${_want}, got ${_got}"
+  echo "install-backup-tools: verified $3"
+}
 PY="$(command -v python3 || command -v python)" \
   || fail "needs python3 to unpack the release assets (bzip2/unzip are absent from these bases)"
 
@@ -60,8 +90,10 @@ case "$(uname -m)" in
 esac
 
 echo "install-backup-tools: installing restic ${restic_version} (${goarch})"
-curl -fsSL -o /tmp/restic.bz2 \
-  "https://github.com/restic/restic/releases/download/v${restic_version}/restic_${restic_version}_linux_${goarch}.bz2"
+restic_asset="restic_${restic_version}_linux_${goarch}.bz2"
+restic_base="https://github.com/restic/restic/releases/download/v${restic_version}"
+curl -fsSL -o /tmp/restic.bz2 "${restic_base}/${restic_asset}"
+verify_sha256 "${restic_base}/SHA256SUMS" /tmp/restic.bz2 "${restic_asset}"
 "$PY" -c 'import bz2,shutil,sys
 with bz2.open(sys.argv[1],"rb") as s, open(sys.argv[2],"wb") as d: shutil.copyfileobj(s,d)' \
   /tmp/restic.bz2 /usr/local/bin/restic
@@ -69,8 +101,10 @@ chmod +x /usr/local/bin/restic
 rm -f /tmp/restic.bz2
 
 echo "install-backup-tools: installing rclone ${rclone_version} (${goarch})"
-curl -fsSL -o /tmp/rclone.zip \
-  "https://github.com/rclone/rclone/releases/download/v${rclone_version}/rclone-v${rclone_version}-linux-${goarch}.zip"
+rclone_asset="rclone-v${rclone_version}-linux-${goarch}.zip"
+rclone_base="https://github.com/rclone/rclone/releases/download/v${rclone_version}"
+curl -fsSL -o /tmp/rclone.zip "${rclone_base}/${rclone_asset}"
+verify_sha256 "${rclone_base}/SHA256SUMS" /tmp/rclone.zip "${rclone_asset}"
 # The binary sits under a versioned directory inside the archive; named explicitly rather than
 # globbed so a changed layout fails here instead of installing nothing and passing.
 "$PY" -c 'import shutil,sys,zipfile
