@@ -107,12 +107,28 @@ ID → Desktop app**.
 cannot be automated:
 
 ```sh
-rclone authorize "drive" "<client-id>" "<client-secret>"
+RCLONE_DRIVE_SCOPE=drive.file rclone authorize "drive" "<client-id>" "<client-secret>"
 ```
 
-That prints a JSON blob containing the refresh token. Use scope `drive.file` when prompted —
-rclone then sees only the files it created itself, which is all a backup ever needs and makes a
-leaked token far less interesting than one with full Drive access.
+That prints a JSON blob containing the refresh token.
+
+**The scope prefix is not optional, and nothing prompts for it.** `rclone authorize` in its
+id/secret form skips every config question and takes backend defaults, and rclone's drive
+default is full `drive` — read and delete access to the user's entire Drive. Verified by reading
+the `scope=` parameter off the OAuth redirect: bare gives
+`.../auth/drive`, the line above gives `.../auth/drive.file`. Scope is fixed at consent time and
+baked into the refresh token, so setting `scope` in config afterwards does NOT narrow an
+existing token; it has to be re-consented and the old grant revoked at
+myaccount.google.com/permissions.
+
+Google shows a visibly narrower consent screen for `drive.file` — "only the specific files you
+use with this app" rather than full Drive — which is the confirmation it worked.
+
+`drive.file` means rclone sees only what it created. That is the right permission for a backup,
+and it has one consequence worth planning for: **rclone cannot see a folder you made in the
+Drive web UI.** Point the destination at a pre-existing folder and rclone will not find it, will
+create a second one with the same name (Drive permits duplicates), and will back up into that.
+Let rclone create the whole path, or pick a name it owns outright.
 
 **Configure the remote from the environment, not a config file:**
 
