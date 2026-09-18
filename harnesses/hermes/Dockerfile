@@ -101,6 +101,27 @@ RUN set -eux; \
     ln -sf "$shell_bin" /usr/local/bin/chromium; \
     chromium --version
 
+# --- Skill command-line tools ---------------------------------------------------------------
+# pandoc and jq, named by bundled skills and absent from the base. Same category as the chromium
+# line above: shipped nowhere, named by a skill, and so the skill cannot run at all.
+#
+# markdown-to-pdf-document is the sharp case. It carries what looks like a fallback --
+# `command -v pandoc || sudo apt-get install -y pandoc` -- but the agent here runs as a non-root
+# UID with no sudo, so the fallback fails too, and it fails while someone is rendering an
+# outbound document rather than at build time.
+#
+# The pandoc hashes are pinned EXPLICITLY because pandoc publishes no checksum asset at all
+# (checked: eleven assets on the 3.11 release, no sums and no signature). Both arches are
+# required even though CI builds only linux/amd64 -- release builds linux/amd64,linux/arm64, so
+# an un-updated arm64 hash would pass CI and fail the publish. See the script header for the
+# one-liner that regenerates them.
+ARG PANDOC_VERSION=3.11
+ARG PANDOC_SHA256_AMD64=37edb3bbcf722f921a009941bf5874e2e0c09263226c9b4a2d980788cb062ab6
+ARG PANDOC_SHA256_ARM64=56ed5566ec41d22ec9ee0704e6ac0b98ba102e92384efd5306173a22d314c79a
+ARG JQ_VERSION=1.8.2
+COPY lib/install-skill-tools.sh /tmp/install-skill-tools.sh
+RUN /tmp/install-skill-tools.sh && rm -f /tmp/install-skill-tools.sh
+
 # --- Store provisioning ---------------------------------------------------------------------
 # Shipped as a tool, never run by this image. A deployment invokes it from a one-shot service
 # that it gates itself; nothing here has an entrypoint or decides when provisioning happens.
