@@ -25,7 +25,7 @@
 #
 # Build context is the REPO ROOT, not this directory, so lib/ is reachable:
 #   docker build -f harnesses/hermes/Dockerfile --build-arg CTXR_VERSION=0.10.0 .
-ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.8.31
+ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.9.14
 
 # Latest STABLE upstream WebUI release. Deliberately not :latest -- that floating tag currently
 # resolves to an `exp-` prerelease build, which upstream's own docs say not to run in
