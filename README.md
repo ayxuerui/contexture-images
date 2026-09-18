@@ -42,8 +42,38 @@ Restoring from the git repo alone gives you a harness that cannot authenticate t
 A restic repository cannot tell you what changed in `SOUL.md` last week. Run both, or pick the
 one whose failure you can live with.
 
-Like `ctxr-provision`, these ship but never run — scheduling is a deployment choice. Absence of
-the destination variable is the off switch, so an unconfigured store does nothing.
+Like `ctxr-provision`, these ship but never run. `harness-schedule` is the third command, and
+what a deployment points a long-lived service at:
+
+```sh
+HARNESS_SCHEDULE_INTERVAL=86400 HARNESS_SCHEDULE_NOTIFY=telegram \
+  harness-schedule harness-backup
+```
+
+Absence of the destination variable is the off switch, so an unconfigured store does nothing.
+
+**Why a scheduler at all, rather than the harness's own cron or a host timer.** A harness's cron
+dies with the harness: a gateway that wedges while still alive is never restarted, because
+Docker restart policies act on process *exit* and not on healthcheck failure — so its scheduler
+stops, and takes both the backups and the delivery channel that would have reported them
+missing. A host timer survives that, but moves the schedule somewhere the compose file no longer
+describes, and a container that shells back out to the host needs the docker socket mounted.
+An ordinary container with its own restart policy has neither problem.
+
+Three of its behaviours are load-bearing rather than incidental, and each is covered by
+`lib/tests/schedule-test.sh`:
+
+- **Runs at startup, then aligns to epoch slots.** `86400` lands on 00:00 UTC, `21600` on
+  00/06/12/18 — stable times, no cron syntax. The startup run is the catch-up: a container
+  restarted after the host was down runs immediately instead of waiting for the next slot,
+  which is the one thing a systemd timer's `Persistent=true` would otherwise have given.
+- **`sleep & wait $!`, never a bare `sleep`.** A bare sleep ignores its trap until it finishes —
+  measured at 29s for a 30s sleep against 0s for this form. At a 24h interval every `compose
+  down` would block for the whole grace period and then SIGKILL, and a SIGKILL partway through
+  a restic run strands a lock the next run has to break.
+- **A failing command never ends the loop.** Exiting would meet `restart: unless-stopped` and
+  turn one bad run into a hot loop re-running the job continuously — a bill on a
+  per-operation destination, a lockout on a rate-limited one.
 
 **`harness-backup` archives through `hermes backup`, not the live tree**, and that is the
 central decision. Hermes copies every `*.db` with `sqlite3.backup()` — a consistent image even
@@ -217,6 +247,7 @@ lib/install-agent-clis.sh             codex, agent-browser, claude, agy: what an
 lib/install-backup-tools.sh           restic + rclone: what a BACKUP needs
 lib/provision-store.sh                shipped as `ctxr-provision`: one-shot store setup
 lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
+lib/schedule.sh                       shipped as `harness-schedule`: run a command on an interval
 lib/tests/                            marker-extracted guard tests; CI runs them before the build
 harnesses/hermes/Dockerfile
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
