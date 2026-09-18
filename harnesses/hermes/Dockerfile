@@ -149,6 +149,24 @@ RUN set -eux; \
     HERMES_DATA_DIR=/nonexistent harness-config-push 2>&1 | grep -q "HARNESS_CONFIG_REPO is required"; \
     HERMES_DATA_DIR=/nonexistent harness-backup 2>&1 | grep -q "HARNESS_BACKUP_DESTINATION is required"
 
+# --- Scheduling -----------------------------------------------------------------------------
+# Shipped, never run -- a deployment points a long-lived service at it. Harness-agnostic: it
+# schedules *a command*, so it lives in lib/ rather than beside the hermes-specific backup.
+#
+# It exists because the two obvious schedulers were worse for a backup specifically. The
+# harness's own cron dies with the harness -- a gateway that wedges while alive is never
+# restarted, since Docker restart policies act on process exit and not on healthcheck failure,
+# so its scheduler stops and takes both the backups and the channel that would have reported
+# them missing. A host timer avoids that but moves the schedule somewhere the compose file does
+# not describe, and host-side units are the category that already rotted on the deployment this
+# was written for.
+COPY lib/schedule.sh /usr/local/bin/harness-schedule
+RUN set -eux; \
+    chmod +x /usr/local/bin/harness-schedule; \
+    sh -n /usr/local/bin/harness-schedule; \
+    harness-schedule true 2>&1 | grep -q "HARNESS_SCHEDULE_INTERVAL is required"; \
+    HARNESS_SCHEDULE_INTERVAL=60 harness-schedule 2>&1 | grep -q "a command is required"
+
 # --- Hermes WebUI ---------------------------------------------------------------------------
 # Source only. `/apptoo` is the pristine tree upstream's image ships (their init rsyncs it to
 # /app at boot); nothing here needs that init, because this image already IS the agent -- the

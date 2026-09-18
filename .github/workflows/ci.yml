@@ -47,6 +47,11 @@ jobs:
       - name: Run the backup guard regression tests
         run: sudo sh lib/tests/harness-config-test.sh
 
+      # No root and no image: it only needs sh and a few seconds, so it rides the same job
+      # rather than paying for another runner.
+      - name: Run the scheduler regression tests
+        run: sh lib/tests/schedule-test.sh
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest

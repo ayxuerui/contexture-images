@@ -31,6 +31,8 @@
 #                                                                    --keep-monthly 6")
 #   HARNESS_BACKUP_STAGING         where the zip is built           (default /tmp/harness-backup)
 #   HARNESS_BACKUP_TAG             restic --tag                     (default harness-home)
+#   HARNESS_BACKUP_MIN_FREE_MB     refuse to start below this much free space on the staging
+#                                  filesystem                       (default 2048)
 #   HARNESS_BACKUP_SKIP_VERIFY     1 to skip the archive assertion. Do not set this.
 #   PUID / PGID                    runtime uid/gid                  (default 10000)
 set -eu
@@ -113,6 +115,29 @@ PYEOF
 # layer's `git add -A`. Note this buys no disk headroom: hermes stages its DB snapshots next to
 # the output zip on purpose (/tmp may be a small tmpfs elsewhere), and here /tmp and the volume
 # are the same filesystem. Free space is a deployment problem, not a staging-path problem.
+# Refuse before writing anything if the staging filesystem cannot take the archive. `hermes
+# backup` streams a multi-gigabyte zip and stages its SQLite snapshots beside it, and on the
+# deployment this was written for that filesystem also carries the live 1 GB state.db the
+# gateway is writing to -- it was at 94% with 7.6 GB free the day this check was added. An
+# ENOSPC underneath a running SQLite database is a worse outcome than a night without a backup,
+# and a scheduled job hits this unattended, at 03:00, repeatedly.
+#
+# A fixed floor rather than a prediction: the archive size is not knowable until it is built,
+# and a wrong guess that lets the run start is worse than a conservative number an operator can
+# raise. Named in the error, both sides, so the fix is obvious.
+_min_free_mb="${HARNESS_BACKUP_MIN_FREE_MB:-2048}"
+_stage_parent="$(dirname "$STAGING")"
+mkdir -p "$_stage_parent"
+_free_mb="$(df -P -k "$_stage_parent" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')"
+if [ -z "$_free_mb" ]; then
+  log "WARNING: cannot read free space on $_stage_parent - proceeding without the headroom check"
+elif [ "$_free_mb" -lt "$_min_free_mb" ]; then
+  log "REFUSED: only ${_free_mb} MB free on $_stage_parent, need ${_min_free_mb} MB."
+  log "  The archive is staged here before upload. Free space, or lower"
+  log "  HARNESS_BACKUP_MIN_FREE_MB if you know this run fits."
+  exit 1
+fi
+
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
