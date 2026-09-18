@@ -152,13 +152,22 @@ plugins/*
 # already in sessions/, and leak request bodies verbatim.
 sessions/request_dump_*.json
 
-# WebUI runtime. KEEP webui/sessions/*.json -- those are the chat record. The
-# journals below duplicate it, churn on every turn, and carry no portability.
-webui/last_workspace.txt
-webui/models_cache.json
-webui/projects.json
-webui/settings.json
-webui/workspaces.json
+# WebUI. Allowlist, not denylist, and the correction is worth the words: this block used to
+# open `webui/` wholesale and then name the noise files to exclude. A second store had
+# `webui/.pbkdf2_key` and `webui/.signing_key` -- 32 bytes each, mode 600, the password-hashing
+# and session-signing keys -- plus `.sessions.json`, `.login_attempts.json` and `shares/`. None
+# were in the noise list, so all of them staged on the first dry run against that store. The
+# first store had none of them, which is exactly why enumerating noise fails: it can only ever
+# describe the files that existed when it was written.
+#
+# So: close webui/ and re-open only the chat record.
+webui/*
+!webui/sessions/
+webui/sessions/*
+!webui/sessions/*.json
+!webui/attachments/
+# The journals duplicate the canonical chat record, churn on every turn, and carry no
+# portability value.
 webui/sessions/_index.json
 webui/sessions/_run_journal/
 webui/sessions/_turn_journal/
@@ -245,3 +254,9 @@ home/.gemini/antigravity-cli/antigravity-oauth-token
 *.pem
 id_rsa
 id_ed25519
+# Key material by name as well as by directory. The webui block above closes the directory
+# these were found in; these lines survive a store re-opening it.
+*.key
+*_key
+.signing_key
+.pbkdf2_key
