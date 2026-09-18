@@ -8,7 +8,7 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` + `restic`, `rclone` |
+| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq` |
 
 ## Using it
 
