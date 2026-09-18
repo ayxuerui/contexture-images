@@ -80,13 +80,16 @@ rm -rf "$WORK/al"; mkdir -p "$WORK/al"; git init -q "$WORK/al"
 sed 's/^@HARNESS_CONFIG_EXTENSIONS@$//' "$ALLOWLIST" > "$WORK/al/.gitignore"
 ign() { git -C "$WORK/al" check-ignore --no-index -q "$1" && echo ignored || echo kept; }
 for p in config.yaml SOUL.md cron/jobs.json sessions/session_a.json webui/sessions/a.json \
+         webui/attachments/a.png \
          home/.claude/projects/p/a.jsonl home/.codex/sessions/2026/a.jsonl \
          user-skills/s/SKILL.md scripts/check_backup.py memories/m.md; do
   check "keeps $p" "$(ign "$p")" "kept"
 done
 
 echo "== the allowlist ignores what it claims =="
-for p in .env auth.json .git-credentials google_token.json mcp-tokens/cb.json \
+for p in webui/.pbkdf2_key webui/.signing_key webui/.sessions.json \
+         webui/.login_attempts.json webui/shares/x.json webui/last_workspace.txt \
+         .env auth.json .git-credentials google_token.json mcp-tokens/cb.json \
          home/.config/gh/hosts.yml home/.claude/.credentials.json home/.codex/auth.json \
          home/.gemini/oauth_creds.json home/.config/rclone/rclone.conf \
          .restic-password state.db state.db-wal checkpoints/a \
@@ -132,6 +135,10 @@ mkrepo; mkdir -p "$WORK/repo/mcp-tokens"; printf 'x' > "$WORK/repo/mcp-tokens/cb
 check "refuses mcp-tokens/" "$(guard)" "1"
 mkrepo; mkdir -p "$WORK/repo/home/.config/rclone"; printf 'x' > "$WORK/repo/home/.config/rclone/rclone.conf"; stage .
 check "refuses rclone.conf (holds a refresh token)" "$(guard)" "1"
+mkrepo; mkdir -p "$WORK/repo/webui"; printf 'x' > "$WORK/repo/webui/.signing_key"; stage .
+check "refuses webui/.signing_key" "$(guard)" "1"
+mkrepo; mkdir -p "$WORK/repo/webui"; printf 'x' > "$WORK/repo/webui/.pbkdf2_key"; stage .
+check "refuses webui/.pbkdf2_key" "$(guard)" "1"
 mkrepo; mkdir -p "$WORK/repo/profiles/leilei"; printf 'x' > "$WORK/repo/profiles/leilei/auth.json"; stage .
 check "refuses profiles/<name>/auth.json" "$(guard)" "1"
 
