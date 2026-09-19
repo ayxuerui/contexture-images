@@ -53,6 +53,18 @@ grep -q 'PUBLIC'           "$VIS"    || { echo "FAIL: visibility-gate markers mi
 grep -q 'SQLite format 3'  "$VERIFY" || { echo "FAIL: archive-verify markers missing or moved";  exit 1; }
 . "$GUARD"
 . "$VIS"
+
+# The extension renderer, lifted verbatim from the script so the test exercises the real
+# thing rather than a copy that can drift from it.
+render_ext() {
+  { echo 'set -u'
+    sed -n '/^  # >>> extension-render/,/^  # <<< extension-render/p' "$PUSH_SRC"
+    echo 'printf "%s" "$_ext"'
+  } > "$WORK/render_run.sh"
+  sh "$WORK/render_run.sh"
+}
+grep -q 'extension-render' "$PUSH_SRC" || {
+  echo "FAIL: extension-render markers missing or moved in $PUSH_SRC"; exit 1; }
 . "$VERIFY"
 
 git config --global user.email harness-test@example.invalid
@@ -115,6 +127,30 @@ check "extension opens platforms/" "$(ign2 platforms/x.yaml)" "kept"
 check "extension opens hooks/"     "$(ign2 hooks/h.sh)"       "kept"
 check "hostile !auth.json loses"   "$(ign2 auth.json)"        "ignored"
 check "hostile !hosts.yml loses"   "$(ign2 home/.config/gh/hosts.yml)" "ignored"
+
+echo "== a NESTED include reaches through a closed parent =="
+# `plugins/*` closes the directory, so a bare `!/plugins/observability/langfuse/` is inert:
+# git never descends into an excluded parent. The render must re-open each level on the way
+# down. This failed silently before -- kept nothing, reported nothing.
+rm -rf "$WORK/al3"; mkdir -p "$WORK/al3"; git init -q "$WORK/al3"
+# EXPORTED, not a `VAR=x func` prefix: that sets a shell variable for the call but does not
+# put it in the environment, and render_ext runs the extracted block in a child `sh`.
+HARNESS_CONFIG_INCLUDE="plugins/observability/langfuse/ plugins/email-platform/ platforms/"
+export HARNESS_CONFIG_INCLUDE
+render_ext > "$WORK/ext3"
+python3 - "$ALLOWLIST" "$WORK/ext3" "$WORK/al3/.gitignore" <<'PY3'
+import sys
+src, ext, dst = sys.argv[1:4]
+open(dst, 'w').write(open(src).read().replace('@HARNESS_CONFIG_EXTENSIONS@', open(ext).read().rstrip('\n')))
+PY3
+ign3() { git -C "$WORK/al3" check-ignore --no-index -q "$1" && echo ignored || echo kept; }
+check "nested plugins/observability/langfuse/ kept" "$(ign3 plugins/observability/langfuse/p.py)" "kept"
+check "sibling plugins/observability/other still ignored" "$(ign3 plugins/observability/other/p.py)" "ignored"
+check "direct child plugins/email-platform/ kept" "$(ign3 plugins/email-platform/p.py)" "kept"
+check "single-segment platforms/ kept" "$(ign3 platforms/x.yaml)" "kept"
+check "unlisted plugins/whatever still ignored" "$(ign3 plugins/whatever/p.py)" "ignored"
+check "secret tail still wins after nesting" "$(ign3 auth.json)" "ignored"
+unset HARNESS_CONFIG_INCLUDE
 
 echo "== the commit guard passes legitimate content =="
 mkrepo

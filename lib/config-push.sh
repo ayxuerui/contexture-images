@@ -26,8 +26,10 @@
 #   HARNESS_CONFIG_BRANCH          branch to commit and push        (default main)
 #   HARNESS_CONFIG_GITIGNORE_SRC   allowlist to render from
 #                                  (default /usr/local/share/contexture/hermes-config.gitignore)
-#   HARNESS_CONFIG_INCLUDE         extra allowlist entries, whitespace-separated. Each is
-#                                  rendered as `!/<entry>`.  e.g. "platforms/ hooks/ plans/"
+#   HARNESS_CONFIG_INCLUDE         extra allowlist entries, whitespace-separated. Nested paths
+#                                  work: each parent level is re-opened and re-closed, because
+#                                  a bare `!/a/b/` is inert when `a/*` already excluded `a/b`.
+#                                  e.g. "platforms/ plugins/observability/langfuse/"
 #   HARNESS_CONFIG_EXCLUDE         extra ignore patterns, whitespace-separated, verbatim.
 #   HARNESS_CONFIG_MESSAGE         commit subject; " <ISO-8601>" is appended
 #                                                  (default "auto: harness config")
@@ -199,11 +201,48 @@ render_gitignore() {
   fi
   [ -f "$GITIGNORE_SRC" ] || { log "ERROR: allowlist not found at $GITIGNORE_SRC"; return 1; }
 
+  # A gitignore re-include CANNOT reach through an excluded parent directory -- git does not
+  # descend into one, so `!/a/b/c/` is silently inert when `a/*` already excluded `a/b`. A
+  # single-segment entry works; a nested one does not, and it fails by quietly keeping nothing
+  # rather than by erroring. Found converging a store whose hand-grown policy kept
+  # plugins/observability/langfuse/ while the shipped base closes plugins/*.
+  #
+  # So each level of a nested entry is re-opened and then re-closed on the way down, which is
+  # the same shape the home/ block below writes by hand.
+  # >>> extension-render >>>
+  # A gitignore re-include CANNOT reach through an excluded parent: git does not descend into
+  # one, so `!/a/b/c/` is inert when `a/*` already excluded `a/b`. Each parent level therefore
+  # has to be re-opened and re-closed on the way down.
+  #
+  # The levels are emitted ONCE, before any of the re-includes, and that ordering is the whole
+  # subtlety. Emitting a chain per entry means a second entry under the same parent re-emits
+  # `plugins/*` AFTER the first entry's re-include and silently clobbers it -- last rule wins.
+  # Caught by a test with two entries under one parent; a single-entry test passes either way.
   _ext=""
+  _seen=" "
+  for _e in ${HARNESS_CONFIG_INCLUDE:-}; do
+    _acc=""
+    _rest="${_e%/}"
+    while :; do
+      case "$_rest" in */*) ;; *) break ;; esac
+      _seg="${_rest%%/*}"
+      _rest="${_rest#*/}"
+      _acc="${_acc}${_seg}"
+      case "$_seen" in
+        *" ${_acc} "*) ;;
+        *) _ext="${_ext}!/${_acc}/
+${_acc}/*
+"
+           _seen="${_seen}${_acc} " ;;
+      esac
+      _acc="${_acc}/"
+    done
+  done
   for _e in ${HARNESS_CONFIG_INCLUDE:-}; do _ext="${_ext}!/${_e}
 "; done
   for _e in ${HARNESS_CONFIG_EXCLUDE:-}; do _ext="${_ext}${_e}
 "; done
+  # <<< extension-render <<<
 
   # awk rather than sed: the replacement is multi-line and the entries contain `/` and `!`.
   awk -v ext="$_ext" '
