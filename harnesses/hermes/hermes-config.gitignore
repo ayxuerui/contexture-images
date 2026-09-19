@@ -51,6 +51,7 @@
 !/plugins/
 !/scripts/
 !/sessions/
+!/skills/
 !/user-skills/
 !/webui/
 
@@ -136,9 +137,23 @@ node/
 bin/
 lsp/
 
-# Bundled trees -- regenerable via `hermes update`. Personal skills live under
-# user-skills/ (kept above).
-skills/
+# Skills: open, minus whatever the image bundles. Rendered at run time by comparing the
+# volume against the harness's own bundle directory, because the two cannot be told apart by
+# name or shape -- an authored skill and a shipped one are both a directory with a SKILL.md,
+# in the same place.
+#
+# This replaces a flat `skills/` deny that paired with `!/user-skills/`. That pairing described
+# a layout upstream has since dropped: user-skills/ no longer exists on either store here, and
+# personal skills now live in skills/ under the curator. The deny was therefore excluding
+# hand-authored and agent-authored work while keeping a directory that was gone -- readyrun was
+# backing up none of its three authored skills.
+#
+# Diffing against the bundle is what makes this self-maintaining. A skill authored tomorrow is
+# kept without anyone editing a list, and an image upgrade that ships new bundled skills starts
+# excluding them on the next run.
+!/skills/
+skills/.*
+@HARNESS_CONFIG_BUNDLED_SKILLS@
 sandboxes/
 checkpoints/
 state-snapshots/
