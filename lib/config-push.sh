@@ -24,6 +24,12 @@
 # Optional:
 #   HERMES_DATA_DIR                harness home to track            (default /opt/data)
 #   HARNESS_CONFIG_BRANCH          branch to commit and push        (default main)
+#   HARNESS_CONFIG_BUNDLED_SKILLS_DIR
+#                                  the harness's own skill bundle, used to tell a shipped skill
+#                                  from an authored one -- they are indistinguishable by name or
+#                                  shape, so the only honest test is "does the image ship it".
+#                                  Absent or empty = nothing under skills/ is excluded.
+#                                  (default /opt/hermes/skills)
 #   HARNESS_CONFIG_GITIGNORE_SRC   allowlist to render from
 #                                  (default /usr/local/share/contexture/hermes-config.gitignore)
 #   HARNESS_CONFIG_INCLUDE         extra allowlist entries, whitespace-separated. Nested paths
@@ -244,9 +250,34 @@ ${_acc}/*
 "; done
   # <<< extension-render <<<
 
+  # >>> bundled-skills >>>
+  # Deny every skill the harness itself ships, computed at render time. Listing authored skills
+  # instead would be the obvious alternative and is the wrong one: the agent writes skills on
+  # its own, so a static list is stale the moment it does, and the failure is silent -- a new
+  # skill simply never reaches the backup.
+  #
+  # Fails OPEN, deliberately. If the bundle directory is missing (another harness, a changed
+  # layout) nothing is denied and the whole of skills/ is kept. Backing up a few megabytes of
+  # regenerable content is a bounded cost; silently dropping authored work is not.
+  _bundled=""
+  _bdir="${HARNESS_CONFIG_BUNDLED_SKILLS_DIR:-/opt/hermes/skills}"
+  if [ -d "$_bdir" ]; then
+    for _b in "$_bdir"/*; do
+      [ -e "$_b" ] || continue
+      _bn="${_b##*/}"
+      case "$_bn" in .*) continue ;; esac
+      _bundled="${_bundled}skills/${_bn}
+"
+    done
+  else
+    log "WARNING: no skill bundle at $_bdir - keeping all of skills/, including anything shipped."
+  fi
+  # <<< bundled-skills <<<
+
   # awk rather than sed: the replacement is multi-line and the entries contain `/` and `!`.
-  awk -v ext="$_ext" '
-    $0 == "@HARNESS_CONFIG_EXTENSIONS@" { printf "%s", ext; next }
+  awk -v ext="$_ext" -v bundled="$_bundled" '
+    $0 == "@HARNESS_CONFIG_EXTENSIONS@"     { printf "%s", ext; next }
+    $0 == "@HARNESS_CONFIG_BUNDLED_SKILLS@" { printf "%s", bundled; next }
     { print }
   ' "$GITIGNORE_SRC" > "${_dst}.tmp"
   mv "${_dst}.tmp" "$_dst"
