@@ -251,6 +251,28 @@ rm -f "$WORK/repo/.gitmodules"
 git -c safe.directory="$WORK/repo" -C "$WORK/repo" add -f sub >/dev/null 2>&1
 check "refuses a bare gitlink" "$(guard)" "1"
 
+echo "== it refuses to commit on the wrong branch =="
+# The failure this prevents is not a crash: it is commits accumulating on a branch nobody
+# pushes, while the push of the configured branch fails for an unrelated-looking reason.
+BR="$WORK/brassert.sh"
+{ echo 'log() { echo "[harness-config-push] $*"; }'
+  sed -n '/^# >>> branch-assert/,/^# <<< branch-assert/p' "$PUSH_SRC"; } > "$BR"
+grep -q 'symbolic-ref' "$BR" || { echo "FAIL: branch-assert markers missing or moved"; exit 1; }
+brcheck() {   # $1 = branch to check out, $2 = configured BRANCH
+  rm -rf "$WORK/br"; git init -q -b main "$WORK/br"
+  ( cd "$WORK/br" && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m base \
+      && { [ "$1" = "DETACH" ] && git checkout -q --detach || git checkout -q -B "$1"; } )
+  ( HERMES_DATA="$WORK/br"; BRANCH="$2"
+    home_git() { git -c safe.directory="$HERMES_DATA" -C "$HERMES_DATA" "$@"; }
+    . "$BR" ) >/dev/null 2>&1
+  echo $?
+}
+check "on the configured branch: proceeds" "$(brcheck main main)" "0"
+check "on another branch: refuses"          "$(brcheck feature main)" "1"
+check "detached HEAD: refuses"              "$(brcheck DETACH main)" "1"
+check "configured to that branch: proceeds" "$(brcheck feature feature)" "0"
+
 echo "== the visibility gate =="
 mkdir -p "$WORK/bin"; PATH="$WORK/bin:$PATH"; export PATH
 ghstub() { printf '#!/bin/sh\n%s\n' "$1" > "$WORK/bin/gh"; chmod +x "$WORK/bin/gh"; }
