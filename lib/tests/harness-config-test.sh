@@ -65,6 +65,17 @@ render_ext() {
 }
 grep -q 'extension-render' "$PUSH_SRC" || {
   echo "FAIL: extension-render markers missing or moved in $PUSH_SRC"; exit 1; }
+
+render_bundled() {
+  { echo 'set -u'
+    echo 'log() { :; }'
+    sed -n '/^  # >>> bundled-skills/,/^  # <<< bundled-skills/p' "$PUSH_SRC"
+    echo 'printf "%s" "$_bundled"'
+  } > "$WORK/bundled_run.sh"
+  sh "$WORK/bundled_run.sh"
+}
+grep -q 'bundled-skills' "$PUSH_SRC" || {
+  echo "FAIL: bundled-skills markers missing or moved in $PUSH_SRC"; exit 1; }
 . "$VERIFY"
 
 git config --global user.email harness-test@example.invalid
@@ -98,6 +109,9 @@ for p in config.yaml SOUL.md cron/jobs.json sessions/session_a.json webui/sessio
   check "keeps $p" "$(ign "$p")" "kept"
 done
 
+# NOTE skills/<name> is deliberately absent from this list. It is no longer a blanket deny:
+# what is excluded under skills/ is computed from the harness's own bundle at render time, and
+# has its own block below. Only the curator's dotfiles are unconditional here.
 echo "== the allowlist ignores what it claims =="
 for p in webui/.pbkdf2_key webui/.signing_key webui/.sessions.json \
          webui/.login_attempts.json webui/shares/x.json webui/last_workspace.txt \
@@ -105,7 +119,8 @@ for p in webui/.pbkdf2_key webui/.signing_key webui/.sessions.json \
          home/.config/gh/hosts.yml home/.claude/.credentials.json home/.codex/auth.json \
          home/.gemini/oauth_creds.json home/.config/rclone/rclone.conf \
          .restic-password state.db state.db-wal checkpoints/a \
-         state-snapshots/s/state.db lazy-packages/x.so skills/bundled/S.md \
+         state-snapshots/s/state.db lazy-packages/x.so \
+         skills/.curator_backups/x skills/.curator_state \
          sessions/request_dump_1.json webui/sessions/_run_journal/a.jsonl \
          profiles/leilei/.env cron/executions.db logs/a.log node/x bin/y; do
   check "ignores $p" "$(ign "$p")" "ignored"
@@ -151,6 +166,49 @@ check "single-segment platforms/ kept" "$(ign3 platforms/x.yaml)" "kept"
 check "unlisted plugins/whatever still ignored" "$(ign3 plugins/whatever/p.py)" "ignored"
 check "secret tail still wins after nesting" "$(ign3 auth.json)" "ignored"
 unset HARNESS_CONFIG_INCLUDE
+
+echo "== skills: authored kept, bundled excluded, computed not listed =="
+# The point of this block: neither side is enumerated in the allowlist. A fake bundle dir
+# stands in for the image's, and the render must deny exactly its contents and nothing else.
+rm -rf "$WORK/bundle" "$WORK/al4"; mkdir -p "$WORK/bundle/devops" "$WORK/bundle/research"
+mkdir -p "$WORK/al4"; git init -q "$WORK/al4"
+HARNESS_CONFIG_BUNDLED_SKILLS_DIR="$WORK/bundle"
+export HARNESS_CONFIG_BUNDLED_SKILLS_DIR
+render_bundled > "$WORK/bundled.txt"
+python3 - "$ALLOWLIST" "$WORK/bundled.txt" "$WORK/al4/.gitignore" <<'PY4'
+import sys
+src, bundled, dst = sys.argv[1:4]
+body = open(src).read()
+body = body.replace('@HARNESS_CONFIG_BUNDLED_SKILLS@', open(bundled).read().rstrip('\n'))
+body = body.replace('@HARNESS_CONFIG_EXTENSIONS@', '')
+open(dst, 'w').write(body)
+PY4
+ign4() { git -C "$WORK/al4" check-ignore --no-index -q "$1" && echo ignored || echo kept; }
+check "bundled devops excluded"        "$(ign4 skills/devops/SKILL.md)"          "ignored"
+check "bundled research excluded"      "$(ign4 skills/research/SKILL.md)"        "ignored"
+check "authored skill kept"            "$(ign4 skills/hermes-cron-jobs/SKILL.md)" "kept"
+check "agent-authored later kept"      "$(ign4 skills/some-new-skill/SKILL.md)"  "kept"
+check "curator blobs still excluded"   "$(ign4 skills/.curator_backups/x)"       "ignored"
+check "curator state still excluded"   "$(ign4 skills/.curator_state)"           "ignored"
+unset HARNESS_CONFIG_BUNDLED_SKILLS_DIR
+
+echo "== with NO bundle dir, it fails OPEN rather than dropping authored work =="
+rm -rf "$WORK/al5"; mkdir -p "$WORK/al5"; git init -q "$WORK/al5"
+HARNESS_CONFIG_BUNDLED_SKILLS_DIR="$WORK/nonexistent"
+export HARNESS_CONFIG_BUNDLED_SKILLS_DIR
+render_bundled > "$WORK/bundled5.txt" 2>/dev/null
+python3 - "$ALLOWLIST" "$WORK/bundled5.txt" "$WORK/al5/.gitignore" <<'PY5'
+import sys
+src, bundled, dst = sys.argv[1:4]
+body = open(src).read()
+body = body.replace('@HARNESS_CONFIG_BUNDLED_SKILLS@', open(bundled).read().rstrip('\n'))
+body = body.replace('@HARNESS_CONFIG_EXTENSIONS@', '')
+open(dst, 'w').write(body)
+PY5
+ign5() { git -C "$WORK/al5" check-ignore --no-index -q "$1" && echo ignored || echo kept; }
+check "no bundle: authored still kept" "$(ign5 skills/hermes-cron-jobs/SKILL.md)" "kept"
+check "no bundle: shipped also kept (bounded cost, not silent loss)" "$(ign5 skills/devops/SKILL.md)" "kept"
+unset HARNESS_CONFIG_BUNDLED_SKILLS_DIR
 
 echo "== the commit guard passes legitimate content =="
 mkrepo
