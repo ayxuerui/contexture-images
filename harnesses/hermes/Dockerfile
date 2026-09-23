@@ -57,7 +57,7 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # Other models and a browser driver, available to the agent's shell on every store running this
 # image rather than only the one whose own Dockerfile installed them. A skill that reaches for
 # `codex` or `claude` and does not find it cannot run at all.
-ARG CODEX_VERSION=0.153.0
+ARG CODEX_VERSION=0.156.1
 ARG AGENT_BROWSER_VERSION=0.26.0
 ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
