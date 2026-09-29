@@ -1,0 +1,113 @@
+# Keep CODEX_VERSION and AGENT_BROWSER_VERSION current with the npm registry.
+#
+# Same problem watch-ctxr.yml solves for ctxr-cli, for the other two npm-distributed agent
+# CLIs pinned in harnesses/hermes/Dockerfile: nothing here automatically knows that
+# @openai/codex or agent-browser published a new version, so a pin drifts silently until
+# someone notices by hand.
+#
+# It only opens a PR, same contract as watch-ctxr.yml: merging is the deliberate act that
+# publishes, via release.yml's push-to-main path filter on harnesses/**. There is a second
+# payoff specific to these two: install-agent-clis.sh installs codex and agent-browser in the
+# SAME RUN as claude and agy, so a build that changes either ARG forces that whole layer to
+# execute fresh instead of replaying a cached one. claude (pinned to the `stable` channel, not
+# a version) and agy (no channel to pin at all) have no ARG of their own, so riding along on
+# whichever of these two moves next is how they stay current too.
+name: Watch agent CLIs
+
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check for a newer ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: codex
+            package: '@openai/codex'
+            arg: CODEX_VERSION
+          - name: agent-browser
+            package: agent-browser
+            arg: AGENT_BROWSER_VERSION
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Compare pinned against published
+        id: compare
+        env:
+          PACKAGE: ${{ matrix.package }}
+          ARG_NAME: ${{ matrix.arg }}
+        run: |
+          set -euo pipefail
+          dockerfile=harnesses/hermes/Dockerfile
+          pinned="$(sed -n "s/^ARG ${ARG_NAME}=//p" "$dockerfile")"
+          latest="$(npm view "${PACKAGE}" version)"
+          echo "pinned:    ${pinned}"
+          echo "published: ${latest}"
+          if [ -z "${pinned}" ]; then
+            echo "::error::could not find 'ARG ${ARG_NAME}=' in ${dockerfile}"
+            exit 1
+          fi
+          if [ -z "${latest}" ]; then
+            echo "::error::npm view returned nothing; refusing to guess"
+            exit 1
+          fi
+          echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          if [ "${pinned}" = "${latest}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump the pin
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          sed -i "s/^ARG ${{ matrix.arg }}=.*/ARG ${{ matrix.arg }}=${{ steps.compare.outputs.latest }}/" harnesses/hermes/Dockerfile
+
+      - name: Open a bump PR
+        if: steps.compare.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/${{ matrix.name }}-${{ steps.compare.outputs.latest }}
+          base: main
+          title: 'Bump ${{ matrix.name }} to ${{ steps.compare.outputs.latest }}'
+          commit-message: 'Bump ${{ matrix.name }} to ${{ steps.compare.outputs.latest }}'
+          delete-branch: true
+          body: |
+            `${{ matrix.package }}` published **${{ steps.compare.outputs.latest }}**; this repo
+            pins **${{ steps.compare.outputs.pinned }}**.
+
+            CI builds this branch, and `install-agent-clis.sh`'s own smoke test confirms this
+            version installs and lands on PATH -- so a green check here means it works in the
+            image, not just on the registry.
+
+            This also refreshes `claude` and `agy`. Neither has a version of its own to pin --
+            `claude` targets the `stable` channel rather than an exact build, and `agy` has no
+            channel at all -- so both just install whatever that channel currently serves. They
+            install in the same layer as codex and agent-browser, so bumping either ARG here
+            forces that whole layer, and both curl-installers, to run fresh instead of replaying
+            a cached one.
+
+            **Merging is what publishes** -- release.yml triggers on a push to main touching
+            `harnesses/**`, so merging this builds and pushes every harness image. There is no
+            separate tagging step to remember.
