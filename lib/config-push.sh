@@ -361,6 +361,30 @@ if ! home_git var GIT_AUTHOR_IDENT >/dev/null 2>&1; then
   fi
 fi
 
+# >>> branch-assert >>>
+# Commit to the branch we are about to PUSH, or refuse. The script used to commit onto whatever
+# HEAD happened to be and then push $BRANCH by name, which are only the same thing when nobody
+# has touched the checkout.
+#
+# Observed: a store's volume was left on a feature branch after someone did PR work inside it.
+# Every scheduled run then committed onto that branch while pushing a `main` that had not moved
+# in hours -- so the pushes failed as non-fast-forward, the commits accumulated somewhere nobody
+# was looking, and the error message ("tip is behind its remote counterpart") pointed at the
+# wrong problem entirely.
+_head="$(home_git symbolic-ref --short -q HEAD || echo '')"
+if [ -z "$_head" ]; then
+  log "REFUSED: $HERMES_DATA is in detached HEAD state."
+  log "  Check out ${BRANCH} before backups can resume:  git -C $HERMES_DATA checkout ${BRANCH}"
+  exit 1
+fi
+if [ "$_head" != "$BRANCH" ]; then
+  log "REFUSED: $HERMES_DATA is on branch '${_head}', but HARNESS_CONFIG_BRANCH is '${BRANCH}'."
+  log "  Committing here would put backups on a branch nobody pushes. Either check out"
+  log "  '${BRANCH}', or set HARNESS_CONFIG_BRANCH='${_head}' if that is genuinely the target."
+  exit 1
+fi
+# <<< branch-assert <<<
+
 home_git add -A
 
 if home_git diff --cached --quiet 2>/dev/null; then
