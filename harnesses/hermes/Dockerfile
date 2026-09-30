@@ -59,6 +59,7 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # `codex` or `claude` and does not find it cannot run at all.
 ARG CODEX_VERSION=0.156.1
 ARG AGENT_BROWSER_VERSION=0.26.0
+ARG CLAUDE_VERSION=2.1.280
 ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
