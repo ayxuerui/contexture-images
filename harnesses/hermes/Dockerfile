@@ -58,7 +58,7 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # image rather than only the one whose own Dockerfile installed them. A skill that reaches for
 # `codex` or `claude` and does not find it cannot run at all.
 ARG CODEX_VERSION=0.156.1
-ARG AGENT_BROWSER_VERSION=0.26.0
+ARG AGENT_BROWSER_VERSION=0.38.1
 ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
