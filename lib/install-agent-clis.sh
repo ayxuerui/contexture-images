@@ -57,8 +57,11 @@ command -v agent-browser >/dev/null 2>&1 || fail "agent-browser did not land on 
 # Installed against a throwaway HOME rather than the real one. At runtime HOME is a VOLUME
 # (/opt/data on the Hermes base), which would put these binaries in mutable state instead of
 # in the image; they would then survive a rebuild and drift invisibly. Symlinked into
-# /usr/local/bin, which is already on PATH and root-owned -- the agent runs unprivileged and
-# so cannot rewrite its own toolchain.
+# /usr/local/bin, which is already on PATH and root-owned, so what the image ships is always
+# what the tag says. That makes these a baseline rather than the only copy: the agent upgrades
+# or adds a tool in its own prefix, /opt/data/home/.local/bin, which sits ahead of this one on
+# PATH -- see harnesses/hermes/profile.d/10-hermes-path.sh. An override there is visible by
+# being in a named directory, rather than drifting inside the image's own tree.
 echo "install-agent-clis: installing claude and agy into ${TOOLCHAIN_HOME}"
 mkdir -p "${TOOLCHAIN_HOME}"
 HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://claude.ai/install.sh | bash -s stable'

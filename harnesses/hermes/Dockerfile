@@ -51,7 +51,9 @@ RUN chmod +r /etc/profile.d/10-hermes-path.sh
 ARG GH_VERSION=2.98.0
 ARG CTXR_VERSION
 COPY lib/install-contexture-toolchain.sh /tmp/install-contexture-toolchain.sh
-RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
+RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh \
+    && mkdir -p /usr/local/share/contexture \
+    && printf '%s\n' "${CTXR_VERSION}" > /usr/local/share/contexture/ctxr-version
 
 # --- Agent CLIs ----------------------------------------------------------------------------
 # Other models and a browser driver, available to the agent's shell on every store running this
@@ -63,6 +65,39 @@ ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
     && rm -f /tmp/install-agent-clis.sh
+
+# --- The agent's own tool prefix ------------------------------------------------------------
+# Everything above is root-owned and the agent runs as `hermes` with no sudo, so the image's
+# CLIs are a BASELINE, not a ceiling: /opt/data/home/.local is where the agent installs a new
+# tool or upgrades one shipped here (claude, agy, codex, ...), and its bin sits ahead of
+# /usr/local/bin. On the data volume deliberately, so an upgrade survives a recreate -- which
+# also means it keeps shadowing the image's copy after an image bump, until someone deletes it.
+# See profile.d/10-hermes-path.sh for how each installer finds it and for the ctxr warning.
+#
+# ENV covers what never runs a login shell (s6 services, `docker exec`, the in-process WebUI
+# before its first snapshot); profile.d covers the login shells Debian's /etc/profile would
+# otherwise reset. Same order in both.
+ENV PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/home/.local/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Smoke test as the runtime uid, through a login shell, which is the path a Hermes session takes.
+# /opt/data is a VOLUME and /opt/data/home does not exist in the image, so what this creates is
+# removed again rather than baked in. Asserted, in order: npm's global prefix is the user one,
+# the user bin beats /usr/local/bin, a shadowing ctxr warns, and removing it stops the warning.
+# `set -eu`, not -eux: xtrace writes to the stderr these assertions capture.
+RUN set -eu; \
+    test ! -e /opt/data/home; \
+    as_agent() { setpriv --reuid=10000 --regid=10000 --clear-groups env -i HOME=/opt/data/home sh -lc "$1"; }; \
+    as_agent 'mkdir -p /opt/data/home/.local/bin'; \
+    test "$(as_agent 'npm config get prefix')" = /opt/data/home/.local; \
+    as_agent 'case ":$PATH:" in *:/opt/data/home/.local/bin:*:/usr/local/bin:*) ;; *) exit 1 ;; esac'; \
+    test -z "$(as_agent true 2>&1)"; \
+    as_agent 'printf "#!/bin/sh\n" > /opt/data/home/.local/bin/ctxr; chmod +x /opt/data/home/.local/bin/ctxr'; \
+    as_agent true 2>&1 | grep -q "shadows the image's ctxr ${CTXR_VERSION}"; \
+    test "$(as_agent 'command -v ctxr')" = /opt/data/home/.local/bin/ctxr; \
+    as_agent 'rm /opt/data/home/.local/bin/ctxr'; \
+    test -z "$(as_agent true 2>&1)"; \
+    test "$(as_agent 'command -v ctxr')" = /usr/local/bin/ctxr; \
+    rm -rf /opt/data/home
 
 # --- Backup tooling ------------------------------------------------------------------------
 # restic (+ rclone as its reach extender) for snapshotting the harness home. Harness-agnostic

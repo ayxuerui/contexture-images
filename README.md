@@ -205,6 +205,41 @@ Set it before the first snapshot — it applies to newly written packs only, so 
 started at the default keeps its existing packs. The cost is that a restore fetches in coarser
 chunks than it strictly needs.
 
+## Installing or upgrading a tool as the agent
+
+The agent runs as `hermes`, without sudo, and everything the image installs is root-owned. So
+the image's CLIs are a baseline: the agent's own prefix is `/opt/data/home/.local`, and its
+`bin` is on `PATH` ahead of `/usr/local/bin`. Nothing needs a wrapper, because every standard
+installer already lands there for a user whose `~` is `/opt/data/home`:
+
+```sh
+claude update                                          # or: curl -fsSL https://claude.ai/install.sh | bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+npm i -g @openai/codex@latest                          # NPM_CONFIG_PREFIX points here for non-root shells
+uv tool install ruff                                   # pip install --user works too
+```
+
+The prefix is on the data volume, so an override survives a restart, a recreate **and an image
+bump**. That is the point, and it is also the cost: once installed, it keeps shadowing whatever
+newer version a later image ships, until someone deletes it. `ls /opt/data/home/.local/bin`
+lists every override. Delete one to go back to the image's copy.
+
+`ctxr` is the exception worth knowing. A ctxr whose version does not match the store's
+`schema_version` fails every call, so a login shell prints a warning to stderr while
+`/opt/data/home/.local/bin/ctxr` exists. It warns and does not refuse, because an override is
+sometimes exactly what you want.
+
+Two consequences:
+
+- Claude Code's auto-updater now takes effect. It always wrote to `~/.local/bin`. That just
+  wasn't on `PATH` before, so the image's copy kept winning.
+- These binaries are in `harness-backup` snapshots, since they sit inside the home it archives
+  (restic dedupes them across runs). They are never in `harness-config-push`, because the
+  allowlist's `home/.*/` already ignores `home/.local`.
+
+apt packages and the agent venv (`/opt/hermes/.venv`) still need root. Put those in a
+downstream `FROM` image.
+
 ## The tag is the ctxr version
 
 `contexture-hermes:0.10.0` contains `ctxr-cli@0.10.0`, and the build fails if that is not true.
