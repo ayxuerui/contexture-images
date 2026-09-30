@@ -14,6 +14,7 @@
 # Inputs, all required, fed from Dockerfile ARGs:
 #   CODEX_VERSION          @openai/codex
 #   AGENT_BROWSER_VERSION  agent-browser
+#   CLAUDE_VERSION         claude.ai/install.sh (see below -- not npm, but still an exact pin)
 #   TOOLCHAIN_HOME         throwaway HOME for the curl|bash installers (see below)
 set -eu
 
@@ -21,6 +22,7 @@ fail() { echo "install-agent-clis: $*" >&2; exit 1; }
 
 : "${CODEX_VERSION:?CODEX_VERSION is required}"
 : "${AGENT_BROWSER_VERSION:?AGENT_BROWSER_VERSION is required}"
+: "${CLAUDE_VERSION:?CLAUDE_VERSION is required}"
 : "${TOOLCHAIN_HOME:?TOOLCHAIN_HOME is required}"
 
 command -v npm >/dev/null 2>&1 || fail "needs Node/npm on the base image"
@@ -37,44 +39,41 @@ codex --version
 command -v agent-browser >/dev/null 2>&1 || fail "agent-browser did not land on PATH"
 
 # --- curl|bash installers ---------------------------------------------------------------
-# Neither claude nor agy ships on npm, so neither can be pinned the way the two above are.
-# They are NOT the same case beyond that, despite this comment previously claiming they were:
+# claude and agy don't ship on npm, but that's an installer-mechanics difference, not a reason
+# either has to float:
 #
-#   claude  install.sh takes [stable|latest|VERSION] as $1. Asked for `stable` -- a floating
-#           CHANNEL, not a version pin. A numeric pin here would need its own watcher to stay
-#           current (cf. .github/workflows/watch-ctxr.yml, which exists for exactly that reason
-#           for ctxr-cli), and there is no such watcher for claude; an unwatched number would
-#           rot silently, which is worse than a named channel. `stable` also happens to be what
-#           `claude install` defaults to with no argument, so naming it changes nothing today
-#           and keeps an upstream default change from moving this image without a diff.
-#   agy     install.sh takes only -d/--dir and -h/--help. Genuinely unpinnable; it is whatever
-#           the installer serves on build day.
-#
-# Both are therefore re-pinned implicitly by the image tag once built. Since neither version is
-# knowable from this file, the smoke tests below ECHO what landed: the build log is the only
-# record of which claude and agy a given tag carries.
+#   claude  install.sh takes [stable|latest|VERSION] as $1 -- an exact version is a supported,
+#           documented argument, not a workaround. Pinned here the same as codex/agent-browser,
+#           watched the same way (watch-agent-clis.yml queries
+#           https://downloads.claude.ai/claude-code-releases/stable, the same plain-text
+#           version endpoint the bootstrap step of install.sh itself reads from, in place of
+#           `npm view`).
+#   agy     install.sh takes only -d/--dir and -h/--help. Genuinely unpinnable: no version
+#           argument, and its manifest (queried by install.sh at
+#           https://antigravity.google/cli/install.sh's $DOWNLOAD_BASE_URL/manifests/$platform.json)
+#           serves only whatever build is current right now -- no history, and the download URL
+#           it returns embeds an opaque per-build id that can't be reconstructed from a version
+#           number. Re-pinned implicitly by the image tag once built, same as before; the smoke
+#           test below ECHOes what landed since there is nothing to assert equality against.
 #
 # Installed against a throwaway HOME rather than the real one. At runtime HOME is a VOLUME
 # (/opt/data on the Hermes base), which would put these binaries in mutable state instead of
 # in the image; they would then survive a rebuild and drift invisibly. Symlinked into
 # /usr/local/bin, which is already on PATH and root-owned -- the agent runs unprivileged and
 # so cannot rewrite its own toolchain.
-echo "install-agent-clis: installing claude and agy into ${TOOLCHAIN_HOME}"
+echo "install-agent-clis: installing claude ${CLAUDE_VERSION} and agy into ${TOOLCHAIN_HOME}"
 mkdir -p "${TOOLCHAIN_HOME}"
-HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://claude.ai/install.sh | bash -s stable'
+HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_VERSION}"'
 HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
 ln -sf "${TOOLCHAIN_HOME}/.local/bin/claude" /usr/local/bin/claude
 ln -sf "${TOOLCHAIN_HOME}/.local/bin/agy" /usr/local/bin/agy
 # `claude --version` prints "<version> (Claude Code)", so the version is the first field only --
-# unlike `ctxr --version`, which prints the bare version and is compared whole in
-# install-contexture-toolchain.sh. A floating channel admits no equality assertion, so assert
-# SHAPE: a claude that installed but cannot report a version still fails the BUILD here rather
-# than a cron job at 03:00, which is the property every other install in this file has.
+# same as install-contexture-toolchain.sh's `ctxr --version` check, an exact pin gets an exact
+# equality assertion: a claude that installed but landed on the wrong version still fails the
+# BUILD here rather than a cron job at 03:00.
 claude_version="$(claude --version | awk '{print $1}')"
-case "${claude_version}" in
-  [0-9]*.[0-9]*.[0-9]*) ;;
-  *) fail "claude --version reported '${claude_version}', which is not a version" ;;
-esac
+[ "${claude_version}" = "${CLAUDE_VERSION}" ] \
+  || fail "claude --version reported '${claude_version}', expected ${CLAUDE_VERSION}"
 
 agy_version="$(agy --version 2>&1 | head -1)"
 [ -n "${agy_version}" ] || fail "agy --version reported nothing"
