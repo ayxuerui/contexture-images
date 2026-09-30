@@ -79,6 +79,33 @@ RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
 # otherwise reset. Same order in both.
 ENV PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/home/.local/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# claude and agy are also SEEDED into that prefix at container start, so their own updaters
+# (`claude update`, agy's installer) work in place on the copy the agent actually runs, rather
+# than leaving a second copy shadowing the image's. Boot-time, not build-time, because /opt/data
+# is a VOLUME and masks anything the build writes under it. The copies in /opt/toolchain, reached
+# through /usr/local/bin, stay as the fallback. codex, agent-browser and ctxr are deliberately NOT
+# seeded -- ctxr's version is the image tag. The hook's header covers how an image bump reaches an
+# untouched copy without ever overwriting one the agent changed.
+COPY harnesses/hermes/cont-init.d/03-seed-user-tools /etc/cont-init.d/03-seed-user-tools
+RUN chmod +x /etc/cont-init.d/03-seed-user-tools && sh -n /etc/cont-init.d/03-seed-user-tools
+
+# Run the real hook as root, exactly as s6 does, against a scratch home: it must drop to the
+# hermes uid, seed both tools owned by that uid, produce a claude that runs and reports the
+# image's version, and do nothing on a second pass. `sh <hook>`, not the hook itself -- its
+# /command/with-contenv shebang needs a live s6 container environment that does not exist at
+# build time. Clean up after: nothing here may end up in the image.
+RUN set -eu; \
+    mkdir -p /tmp/seedtest; chown 10000:10000 /tmp/seedtest; \
+    SEED_DEST_HOME=/tmp/seedtest/home sh /etc/cont-init.d/03-seed-user-tools | grep -q 'claude: seeded'; \
+    test "$(stat -c %u /tmp/seedtest/home/.local/bin/agy)" = 10000; \
+    test "$(stat -c %u /tmp/seedtest/home/.local/bin/claude)" = 10000; \
+    want="$(/usr/local/bin/claude --version)"; \
+    got="$(setpriv --reuid=10000 --regid=10000 --clear-groups env -i HOME=/tmp/seedtest/home \
+           /tmp/seedtest/home/.local/bin/claude --version)"; \
+    test "$got" = "$want"; \
+    test -z "$(SEED_DEST_HOME=/tmp/seedtest/home sh /etc/cont-init.d/03-seed-user-tools)"; \
+    rm -rf /tmp/seedtest
+
 # Smoke test as the runtime uid, through a login shell, which is the path a Hermes session takes.
 # /opt/data is a VOLUME and /opt/data/home does not exist in the image, so what this creates is
 # removed again rather than baked in. Asserted, in order: npm's global prefix is the user one,

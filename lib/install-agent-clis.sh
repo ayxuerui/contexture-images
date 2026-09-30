@@ -60,8 +60,10 @@ command -v agent-browser >/dev/null 2>&1 || fail "agent-browser did not land on 
 # /usr/local/bin, which is already on PATH and root-owned, so what the image ships is always
 # what the tag says. That makes these a baseline rather than the only copy: the agent upgrades
 # or adds a tool in its own prefix, /opt/data/home/.local/bin, which sits ahead of this one on
-# PATH -- see harnesses/hermes/profile.d/10-hermes-path.sh. An override there is visible by
-# being in a named directory, rather than drifting inside the image's own tree.
+# PATH -- see harnesses/hermes/profile.d/10-hermes-path.sh. claude and agy are additionally
+# copied there at container start (harnesses/hermes/cont-init.d/03-seed-user-tools), because the
+# data volume masks anything this build could put under it; this throwaway HOME is where that
+# hook reads them from.
 echo "install-agent-clis: installing claude and agy into ${TOOLCHAIN_HOME}"
 mkdir -p "${TOOLCHAIN_HOME}"
 HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://claude.ai/install.sh | bash -s stable'

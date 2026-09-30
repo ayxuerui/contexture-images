@@ -208,9 +208,9 @@ chunks than it strictly needs.
 ## Installing or upgrading a tool as the agent
 
 The agent runs as `hermes`, without sudo, and everything the image installs is root-owned. So
-the image's CLIs are a baseline: the agent's own prefix is `/opt/data/home/.local`, and its
-`bin` is on `PATH` ahead of `/usr/local/bin`. Nothing needs a wrapper, because every standard
-installer already lands there for a user whose `~` is `/opt/data/home`:
+the agent has its own prefix: `/opt/data/home/.local`, whose `bin` is on `PATH` ahead of
+`/usr/local/bin`. Nothing needs a wrapper, because every standard installer already lands there
+for a user whose `~` is `/opt/data/home`:
 
 ```sh
 claude update                                          # or: curl -fsSL https://claude.ai/install.sh | bash
@@ -219,23 +219,40 @@ npm i -g @openai/codex@latest                          # NPM_CONFIG_PREFIX point
 uv tool install ruff                                   # pip install --user works too
 ```
 
-The prefix is on the data volume, so an override survives a restart, a recreate **and an image
-bump**. That is the point, and it is also the cost: once installed, it keeps shadowing whatever
-newer version a later image ships, until someone deletes it. `ls /opt/data/home/.local/bin`
-lists every override. Delete one to go back to the image's copy.
+**`claude` and `agy` are seeded into that prefix at container start.** The image ships them in
+`/opt/toolchain` (reached through `/usr/local/bin`), but a `VOLUME` masks anything a build writes
+under `/opt/data`, so a boot hook (`03-seed-user-tools`) copies them into `~/.local` the first
+time. That is what lets `claude update` and agy's updater work **in place** on the copy the agent
+is running, instead of installing a second one beside it. The `/usr/local/bin` copies remain as
+the fallback for a volume that was never seeded.
 
-`ctxr` is the exception worth knowing. A ctxr whose version does not match the store's
-`schema_version` fails every call, so a login shell prints a warning to stderr while
-`/opt/data/home/.local/bin/ctxr` exists. It warns and does not refuse, because an override is
-sometimes exactly what you want.
+A seeded copy does not freeze. Each tool has a marker recording what was seeded, and on an image
+bump:
 
-Two consequences:
+| The copy in `~/.local/bin` is… | On the next boot |
+|---|---|
+| still exactly what was seeded | replaced with the image's newer one |
+| changed by the agent (`claude update`, a reinstall) | **left alone** — it is the agent's now |
+| there with no marker (installed by hand) | **left alone**, never claimed |
+| absent | seeded from the image |
 
-- Claude Code's auto-updater now takes effect. It always wrote to `~/.local/bin`. That just
-  wasn't on `PATH` before, so the image's copy kept winning.
-- These binaries are in `harness-backup` snapshots, since they sit inside the home it archives
-  (restic dedupes them across runs). They are never in `harness-config-push`, because the
-  allowlist's `home/.*/` already ignores `home/.local`.
+So deleting a tool from `~/.local/bin` is how you go back to the image's version. Set
+`CONTEXTURE_SEED_USER_TOOLS=0` to turn seeding off. The hook never fails a boot — a full volume
+just means the tool falls back to `/usr/local/bin`.
+
+`codex`, `agent-browser` and `ctxr` are **not** seeded. They are npm packages the agent upgrades
+with `npm i -g`, and `ctxr` in particular must stay what the image tag says: a ctxr that does not
+match the store's `schema_version` fails every call, so a login shell prints a warning to stderr
+while `/opt/data/home/.local/bin/ctxr` exists. It warns and does not refuse, because an override
+is sometimes exactly what you want.
+
+Two costs to know about:
+
+- The pair is about 450 MB on the volume, and they sit inside the home `harness-backup`
+  archives. They are never in `harness-config-push`: the allowlist's `home/.*/` already ignores
+  `home/.local`.
+- An override outlives image bumps. Whatever the agent installs keeps shadowing newer versions
+  the image ships, until it is deleted. `ls /opt/data/home/.local/bin` lists what is there.
 
 apt packages and the agent venv (`/opt/hermes/.venv`) still need root. Put those in a
 downstream `FROM` image.
@@ -288,6 +305,7 @@ harnesses/hermes/Dockerfile
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
 harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
+harnesses/hermes/cont-init.d/         boot hook that seeds claude and agy into the agent's prefix
 ```
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow

@@ -19,7 +19,8 @@
 # is pointed at it, below. Hardcoded rather than $HOME-relative because `docker exec` as root
 # has HOME=/root, and this must name the same directory on every surface. It is on the data
 # volume, so an override survives a recreate AND an image bump: it keeps shadowing the image's
-# copy until someone deletes it.
+# copy until someone deletes it. claude and agy start there already -- cont-init.d/03-seed-user-tools
+# copies them in at boot -- so their updaters work in place.
 #
 # The venv stays first so `python` is still the agent's interpreter.
 #

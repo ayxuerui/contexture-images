@@ -1,0 +1,131 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Seed the agent's own tool prefix with the two CLIs whose updaters expect it: claude and agy.
+#
+# WHY these two and not the rest. `claude update` and agy's installer both work in place on a
+# ~/.local layout (bin/ launcher + share/claude/versions/). Given a real copy there, the agent
+# upgrades the tool it is actually running, instead of installing a second copy that shadows a
+# first. codex, agent-browser and ctxr stay in /usr/local on purpose: they are npm packages the
+# agent upgrades with `npm i -g` anyway, and ctxr's version IS the image tag -- seeding it would
+# let a store keep an old ctxr after an image bump, which is the drift the tag exists to prevent.
+#
+# WHY at boot and not at build. /opt/data is a VOLUME, so anything the build wrote under
+# /opt/data/home is masked by the mount; the image can only hold these in /opt/toolchain. The
+# /usr/local/bin symlinks into it remain as the fallback for a volume that was never seeded, a
+# root shell, or CONTEXTURE_SEED_USER_TOOLS=0.
+#
+# WHAT keeps a seeded copy from freezing forever. Per tool a marker records the identity that was
+# seeded. On an image bump (marker != what the image now ships):
+#   - the agent's copy is still exactly what was seeded  -> replace it with the image's;
+#   - the agent has changed it (`claude update` etc.)    -> leave it, it is theirs now;
+#   - no marker at all (installed by hand before this)   -> leave it, never claim it.
+# When marker == image nothing runs, so a steady-state boot costs a few stat calls, not a copy.
+#
+# Identity is cheap and needs no hashing: the claude version directory name, and for agy
+# `size-mtime` -- `cp -p` preserves mtime, so a seeded copy has the same identity as its source
+# until the agent replaces the file.
+#
+# MUST NEVER EXIT NON-ZERO. s6-overlay stops the container when a cont-init.d script fails, and a
+# full volume (the pair is ~450 MB) is not worth a dead container. Every failure is logged and
+# the tool simply falls back to /usr/local/bin.
+#
+# Runs after 01-hermes-setup, which remaps the hermes uid and chowns the volume; it then drops to
+# that uid so everything it creates is owned correctly with no chown pass.
+#
+# Test seams, all optional: SEED_SRC_HOME, SEED_DEST_HOME, SEED_AS_USER. See
+# lib/tests/seed-user-tools-test.sh.
+
+SRC="${SEED_SRC_HOME:-/opt/toolchain}"
+DEST="${SEED_DEST_HOME:-/opt/data/home}"
+AS_USER="${SEED_AS_USER:-hermes}"
+
+log() { echo "[seed-user-tools] $*"; }
+
+case "${CONTEXTURE_SEED_USER_TOOLS:-1}" in
+  0|false|FALSE|False|no|NO|No|off|OFF|Off) log "disabled (CONTEXTURE_SEED_USER_TOOLS)"; exit 0 ;;
+esac
+
+if [ "$(id -u)" = 0 ]; then
+  uid="$(id -u "$AS_USER" 2>/dev/null)" && gid="$(id -g "$AS_USER" 2>/dev/null)" \
+    || { log "no user '$AS_USER'; skipping"; exit 0; }
+  exec setpriv --reuid="$uid" --regid="$gid" --clear-groups sh "$0" "$@"
+fi
+
+BIN="$DEST/.local/bin"
+VERSIONS="$DEST/.local/share/claude/versions"
+MARKERS="$DEST/.local/share/contexture-seed"
+
+mkdir -p "$BIN" "$VERSIONS" "$MARKERS" 2>/dev/null \
+  || { log "cannot create $DEST/.local; skipping"; exit 0; }
+
+# One seeder at a time: two containers booting on the same volume would otherwise both copy.
+exec 9>"$MARKERS/lock"
+if command -v flock >/dev/null 2>&1; then
+  flock -w 300 9 || { log "could not take the seed lock; skipping"; exit 0; }
+fi
+
+marker() { cat "$MARKERS/$1" 2>/dev/null; }
+
+# decide <tool> <image identity> <agent's current identity, "" if absent>
+# Returns 0 to (re)seed, 1 to leave alone, per the table in the header. Identities are plain
+# strings; the marker for <tool> supplies the third one.
+decide() {
+  tool="$1"; src_id="$2"; user_id="$3"; mark_id="$(marker "$1")"
+  if [ -z "$src_id" ]; then return 1; fi                      # image does not ship it
+  if [ -z "$user_id" ]; then return 0; fi                     # nothing there: seed
+  if [ -z "$mark_id" ]; then
+    log "$tool: found an existing install with no seed marker; leaving it alone"; return 1
+  fi
+  if [ "$mark_id" = "$src_id" ]; then return 1; fi            # current
+  if [ "$user_id" = "$mark_id" ]; then return 0; fi           # untouched and stale: replace
+  log "$tool: the image now ships a newer copy, but this one was changed by the agent; leaving it"
+  return 1
+}
+
+# --- claude: a launcher symlink into share/claude/versions/<version> --------------------------
+src_claude=""
+if [ -L "$SRC/.local/bin/claude" ]; then
+  src_claude="$(basename "$(readlink "$SRC/.local/bin/claude")")"
+fi
+user_claude=""
+if [ -L "$BIN/claude" ]; then
+  user_claude="$(basename "$(readlink "$BIN/claude")")"
+elif [ -e "$BIN/claude" ]; then
+  user_claude="not-a-seeded-launcher"   # a real file the agent put there: present, never ours
+fi
+
+if decide claude "$src_claude" "$user_claude"; then
+  old="$(marker claude)"
+  if { [ -e "$VERSIONS/$src_claude" ] \
+         || { cp -p "$SRC/.local/share/claude/versions/$src_claude" "$VERSIONS/.seed-$src_claude" \
+              && mv -f "$VERSIONS/.seed-$src_claude" "$VERSIONS/$src_claude"; }; } \
+     && ln -sfn "$VERSIONS/$src_claude" "$BIN/.claude.seed" \
+     && mv -fT "$BIN/.claude.seed" "$BIN/claude" \
+     && echo "$src_claude" > "$MARKERS/claude"; then
+    log "claude: seeded $src_claude"
+    # The previous seeded version is now unreferenced; drop it rather than keep ~240 MB per bump.
+    if [ -n "$old" ] && [ "$old" != "$src_claude" ]; then rm -f "$VERSIONS/$old"; fi
+  else
+    rm -f "$VERSIONS/.seed-$src_claude" "$BIN/.claude.seed"
+    log "claude: seeding failed (volume full or read-only?); falling back to the image copy"
+  fi
+fi
+
+# --- agy: a single binary ---------------------------------------------------------------------
+src_agy=""
+if [ -f "$SRC/.local/bin/agy" ]; then src_agy="$(stat -c '%s-%Y' "$SRC/.local/bin/agy")"; fi
+user_agy=""
+if [ -f "$BIN/agy" ]; then user_agy="$(stat -c '%s-%Y' "$BIN/agy")"; fi
+
+if decide agy "$src_agy" "$user_agy"; then
+  if cp -p "$SRC/.local/bin/agy" "$BIN/.agy.seed" \
+     && mv -f "$BIN/.agy.seed" "$BIN/agy" \
+     && echo "$src_agy" > "$MARKERS/agy"; then
+    log "agy: seeded"
+  else
+    rm -f "$BIN/.agy.seed"
+    log "agy: seeding failed (volume full or read-only?); falling back to the image copy"
+  fi
+fi
+
+exit 0

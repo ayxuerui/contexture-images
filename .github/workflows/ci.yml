@@ -52,6 +52,11 @@ jobs:
       - name: Run the scheduler regression tests
         run: sh lib/tests/schedule-test.sh
 
+      # Must NOT be root, unlike the two above: the hook drops to an unprivileged uid, and
+      # mode-bit checks prove nothing for root.
+      - name: Run the tool-seeding regression tests
+        run: sh lib/tests/seed-user-tools-test.sh
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest
