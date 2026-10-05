@@ -232,6 +232,33 @@ RUN set -eux; \
     test -f /etc/s6-overlay/s6-rc.d/webui/type; \
     test -f /etc/s6-overlay/s6-rc.d/webui/dependencies.d/base
 
+# --- Store update at container start ------------------------------------------------------
+# `ctxr-update-store`: refresh the canonical clone, then `ctxr update --worktree`, then commit,
+# push and open a PR when anything changed -- so a store that got a newer ctxr by image pull is
+# re-rendered, and migrated if its schema is behind, without anyone remembering to. Hermes
+# migrates its own config.yaml at boot for the same reason; a store is a reviewed git repository,
+# so here the result is a pull request rather than a write in place. See lib/update-store.sh.
+#
+# Run by the `store-update` s6 service once per container start, as the runtime user, opt-in via
+# CTXR_UPDATE_STORE_ENABLED: every container in a stack runs this image, and exactly one should
+# push a branch per release. It never fails the boot and never restarts (finish exits 125).
+#
+# The smoke test proves the shipped script is the real one and is inert without a store: with
+# no contexture.yaml it must say so and exit 0. Anything else here is exercised by
+# lib/tests/update-store-test.sh against real repositories, which CI runs before this build.
+COPY lib/update-store.sh /usr/local/bin/ctxr-update-store
+COPY harnesses/hermes/s6-rc.d/store-update /etc/s6-overlay/s6-rc.d/store-update
+RUN set -eux; \
+    chmod +x /usr/local/bin/ctxr-update-store \
+      /etc/s6-overlay/s6-rc.d/store-update/run /etc/s6-overlay/s6-rc.d/store-update/finish; \
+    sh -n /usr/local/bin/ctxr-update-store; \
+    touch /etc/s6-overlay/s6-rc.d/user/contents.d/store-update; \
+    test -f /etc/s6-overlay/s6-rc.d/store-update/type; \
+    test -f /etc/s6-overlay/s6-rc.d/store-update/dependencies.d/base; \
+    STORE_DIR=/nonexistent ctxr-update-store | grep -q "no provisioned store at /nonexistent"; \
+    STORE_DIR=/nonexistent ctxr-update-store; \
+    ctxr update --help 2>&1 | grep -q -- '--worktree'
+
 # --- Bundled document-skill Python deps -----------------------------------------------------
 # The agent's bundled productivity skills (pdf, docx, xlsx, powerpoint) name these as
 # prerequisites in their own SKILL.md, but none of them ship in the upstream agent venv. Absent

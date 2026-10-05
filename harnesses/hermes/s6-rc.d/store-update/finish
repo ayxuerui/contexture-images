@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# One run per container start, enabled or not: exit 125 is s6-supervise's "permanently failed,
+# do not restart", so the slot reports down once ./run returns and nothing loops. See ./run.
+#
+# Arguments: $1=run-exit-code, $2=signal-num, $3=service-dir-name, $4=run-pgid. servicedir(7).
+exit 125

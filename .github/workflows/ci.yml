@@ -52,6 +52,12 @@ jobs:
       - name: Run the scheduler regression tests
         run: sh lib/tests/schedule-test.sh
 
+      # No root and no image either: real git repositories with a bare origin, and stubbed
+      # ctxr/gh. Guards the start-of-container store update, whose failures are all silent --
+      # above all, a squash-merged branch mistaken for an unmerged one.
+      - name: Run the store-update regression tests
+        run: sh lib/tests/update-store-test.sh
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest
