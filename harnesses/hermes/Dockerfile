@@ -239,9 +239,11 @@ RUN set -eux; \
 # migrates its own config.yaml at boot for the same reason; a store is a reviewed git repository,
 # so here the result is a pull request rather than a write in place. See lib/update-store.sh.
 #
-# Run by the `store-update` s6 service once per container start, as the runtime user, opt-in via
-# CTXR_UPDATE_STORE_ENABLED: every container in a stack runs this image, and exactly one should
-# push a branch per release. It never fails the boot and never restarts (finish exits 125).
+# Run by the `store-update` s6 service once per container start, as the runtime user, in every
+# container unless CTXR_UPDATE_STORE_ENABLED=0. The script elects itself: a container with a
+# read-only store or no gh credential steps aside, and a lock on the store's git directory lets
+# exactly one of the rest do the work. It never fails the boot and never restarts (finish exits
+# 125).
 #
 # The smoke test proves the shipped script is the real one and is inert without a store: with
 # no contexture.yaml it must say so and exit 0. Anything else here is exercised by
