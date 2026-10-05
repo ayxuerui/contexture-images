@@ -238,6 +238,30 @@ Publishing is safe to automate because a published tag is **inert** — consumer
 tag, and nothing reads `:latest`. A new image sits unused until someone bumps their own pin,
 which is where the real judgement belongs (does this ctxr match my store's `schema_version`?).
 
+## Upgrading the tools
+
+Hermes' own install tree is immutable at runtime, and upstream's documented upgrade path for this
+base is to pull the new image and recreate the container ([Hermes Docker guide — Upgrading](https://hermes-agent.nousresearch.com/docs/user-guide/docker#upgrading)). Every tool this image
+adds follows that same path, so nothing here upgrades itself in a running container.
+
+That only works if the image actually moves, so every agent CLI is pinned by an `ARG` in
+`harnesses/hermes/Dockerfile`, and `watch-agent-clis.yml` opens a bump PR when its publisher has
+a newer one, the same way `watch-ctxr.yml` does for ctxr:
+
+| Tool | Pin | Read from |
+|---|---|---|
+| `codex`, `agent-browser` | exact, asserted by the build | npm |
+| `claude` | exact, asserted by the build | the `stable` channel its installer reads |
+| `agy` | a cache key and an expectation — the installer takes no version, so a mismatch warns rather than fails | the manifest its installer reads |
+
+Merging a bump republishes `:<ctxr version>` — the tag names ctxr, so a tool bump moves the
+same tag. A deployment pinned to it upgrades with `docker compose pull && docker compose up -d`;
+its `/opt/data` volume carries over.
+
+For something occasional, upstream's own advice applies inside the container: `npx` or `uvx`
+run as the agent's user with no install at all. Anything needed on every start belongs in an
+image built `FROM` this one.
+
 ## Layout
 
 ```

@@ -1,17 +1,20 @@
-# Keep CODEX_VERSION and AGENT_BROWSER_VERSION current with the npm registry.
+# Keep every pinned agent CLI in harnesses/hermes/Dockerfile current with its publisher.
 #
-# Same problem watch-ctxr.yml solves for ctxr-cli, for the other two npm-distributed agent
-# CLIs pinned in harnesses/hermes/Dockerfile: nothing here automatically knows that
-# @openai/codex or agent-browser published a new version, so a pin drifts silently until
-# someone notices by hand.
+# Same problem watch-ctxr.yml solves for ctxr-cli: nothing here automatically knows that a tool
+# published a new version, so a pin drifts silently until someone notices by hand. And since
+# this base's install tree is immutable at runtime -- upstream's documented upgrade path is
+# "pull the new image and recreate" -- a pin that does not move means a tool that never upgrades.
+#
+# Two kinds of source:
+#   npm      codex, agent-browser -- `npm view <package> version`.
+#   release  claude, agy -- neither is on npm, so each is read from the endpoint its own
+#            installer reads. claude's `stable` channel file is a bare version; agy's platform
+#            manifest is JSON with a `version` key (linux_amd64 is the one CI builds, and both
+#            arches publish together). See install-agent-clis.sh for why claude's pin is exact and
+#            agy's is a cache key plus an expectation.
 #
 # It only opens a PR, same contract as watch-ctxr.yml: merging is the deliberate act that
-# publishes, via release.yml's push-to-main path filter on harnesses/**. There is a second
-# payoff specific to these two: install-agent-clis.sh installs codex and agent-browser in the
-# SAME RUN as claude and agy, so a build that changes either ARG forces that whole layer to
-# execute fresh instead of replaying a cached one. claude (pinned to the `stable` channel, not
-# a version) and agy (no channel to pin at all) have no ARG of their own, so riding along on
-# whichever of these two moves next is how they stay current too.
+# publishes, via release.yml's push-to-main path filter on harnesses/**.
 #
 # The PR branch is named by TOOL, not by target version (chore/bump-codex, not
 # chore/codex-0.159.2). A version-suffixed name made every new publish open a brand-new PR
@@ -48,6 +51,13 @@ jobs:
           - name: agent-browser
             package: agent-browser
             arg: AGENT_BROWSER_VERSION
+          - name: claude
+            source_url: https://downloads.claude.ai/claude-code-releases/stable
+            arg: CLAUDE_VERSION
+          - name: agy
+            source_url: https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
+            json_key: version
+            arg: AGY_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,20 +72,30 @@ jobs:
         id: compare
         env:
           PACKAGE: ${{ matrix.package }}
+          SOURCE_URL: ${{ matrix.source_url }}
+          JSON_KEY: ${{ matrix.json_key }}
           ARG_NAME: ${{ matrix.arg }}
         run: |
           set -euo pipefail
           dockerfile=harnesses/hermes/Dockerfile
           pinned="$(sed -n "s/^ARG ${ARG_NAME}=//p" "$dockerfile")"
-          latest="$(npm view "${PACKAGE}" version)"
+          if [ -n "${PACKAGE}" ]; then
+            latest="$(npm view "${PACKAGE}" version)"
+          elif [ -n "${JSON_KEY}" ]; then
+            latest="$(curl -fsSL "${SOURCE_URL}" | jq -r --arg k "${JSON_KEY}" '.[$k] // empty')"
+          else
+            latest="$(curl -fsSL "${SOURCE_URL}" | tr -d '[:space:]')"
+          fi
+          # Anything but a plain version is refused rather than written into the Dockerfile:
+          # an error page or a changed format must fail this run, not land in a bump PR.
+          if ! printf '%s\n' "${latest}" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::published version '${latest:0:80}' is not a version; refusing to guess"
+            exit 1
+          fi
           echo "pinned:    ${pinned}"
           echo "published: ${latest}"
           if [ -z "${pinned}" ]; then
             echo "::error::could not find 'ARG ${ARG_NAME}=' in ${dockerfile}"
-            exit 1
-          fi
-          if [ -z "${latest}" ]; then
-            echo "::error::npm view returned nothing; refusing to guess"
             exit 1
           fi
           echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
@@ -102,20 +122,14 @@ jobs:
           commit-message: 'Bump ${{ matrix.name }} to ${{ steps.compare.outputs.latest }}'
           delete-branch: true
           body: |
-            `${{ matrix.package }}` published **${{ steps.compare.outputs.latest }}**; this repo
-            pins **${{ steps.compare.outputs.pinned }}**.
+            **${{ matrix.name }}** published **${{ steps.compare.outputs.latest }}**; this repo
+            pins **${{ steps.compare.outputs.pinned }}** (`${{ matrix.arg }}`).
 
-            CI builds this branch, and `install-agent-clis.sh`'s own smoke test confirms this
-            version installs and lands on PATH -- so a green check here means it works in the
-            image, not just on the registry.
-
-            This also refreshes `claude` and `agy`. Neither has a version of its own to pin --
-            `claude` targets the `stable` channel rather than an exact build, and `agy` has no
-            channel at all -- so both just install whatever that channel currently serves. They
-            install in the same layer as codex and agent-browser, so bumping either ARG here
-            forces that whole layer, and both curl-installers, to run fresh instead of replaying
-            a cached one.
+            CI builds this branch, and `install-agent-clis.sh`'s own smoke test confirms the new
+            version installs and runs in the image -- an exact match for codex, agent-browser and
+            claude; for agy, whose installer cannot be pinned, a warning in the build log if what
+            landed differs.
 
             **Merging is what publishes** -- release.yml triggers on a push to main touching
-            `harnesses/**`, so merging this builds and pushes every harness image. There is no
-            separate tagging step to remember.
+            `harnesses/**`, so merging this builds and pushes every harness image. Deployments
+            pick it up the way upstream documents for this base: pull the new image and recreate.
