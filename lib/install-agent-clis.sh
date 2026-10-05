@@ -62,10 +62,33 @@ command -v agent-browser >/dev/null 2>&1 || fail "agent-browser did not land on 
 # in the image; they would then survive a rebuild and drift invisibly. Symlinked into
 # /usr/local/bin, which is already on PATH and root-owned -- the agent runs unprivileged and
 # so cannot rewrite its own toolchain.
+#
+# Each installer is downloaded to a file and checked BEFORE bash sees it, rather than piped
+# straight in. agy's URL has been seen serving its script gzip-compressed with no
+# Content-Encoding header -- the body began with the gzip magic 1f 8b -- so `curl --compressed`
+# cannot help, curl hands the bytes over as-is, and `curl | bash` then fails the build with a
+# syntax error over binary. The next five fetches were plain text, so it is intermittent and
+# upstream's, which is exactly why it is handled here rather than waited out: it lands at random
+# on whatever release build happens to be running. A body that is still not a script after this
+# fails the build naming the URL, instead of handing bash garbage.
+fetch_installer() {
+  _url=$1; _dest=$2
+  curl -fsSL --retry 3 -o "${_dest}" "${_url}" || fail "could not download ${_url}"
+  if [ "$(head -c 2 "${_dest}" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+    echo "install-agent-clis: ${_url} served gzip with no Content-Encoding; decompressing"
+    gzip -dc < "${_dest}" > "${_dest}.sh" && mv "${_dest}.sh" "${_dest}" \
+      || fail "${_url} looked gzip-compressed but would not decompress"
+  fi
+  [ "$(head -c 2 "${_dest}")" = '#!' ] || fail "${_url} did not serve a shell script"
+}
+
 echo "install-agent-clis: installing claude ${CLAUDE_VERSION} and agy into ${TOOLCHAIN_HOME}"
 mkdir -p "${TOOLCHAIN_HOME}"
-HOME="${TOOLCHAIN_HOME}" sh -c "curl -fsSL https://claude.ai/install.sh | bash -s '${CLAUDE_VERSION}'"
-HOME="${TOOLCHAIN_HOME}" sh -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+fetch_installer https://claude.ai/install.sh /tmp/claude-install.sh
+fetch_installer https://antigravity.google/cli/install.sh /tmp/agy-install.sh
+HOME="${TOOLCHAIN_HOME}" bash /tmp/claude-install.sh "${CLAUDE_VERSION}"
+HOME="${TOOLCHAIN_HOME}" bash /tmp/agy-install.sh
+rm -f /tmp/claude-install.sh /tmp/agy-install.sh
 ln -sf "${TOOLCHAIN_HOME}/.local/bin/claude" /usr/local/bin/claude
 ln -sf "${TOOLCHAIN_HOME}/.local/bin/agy" /usr/local/bin/agy
 
