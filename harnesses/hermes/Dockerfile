@@ -58,7 +58,7 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # image rather than only the one whose own Dockerfile installed them. A skill that reaches for
 # `codex` or `claude` and does not find it cannot run at all.
 ARG CODEX_VERSION=0.160.0
-ARG AGENT_BROWSER_VERSION=0.26.0
+ARG AGENT_BROWSER_VERSION=0.38.2
 # Both watched by watch-agent-clis.yml, like the two above. CLAUDE_VERSION is an exact pin;
 # AGY_VERSION is a cache key and an expectation, since agy's installer cannot be pinned. See
 # install-agent-clis.sh.
