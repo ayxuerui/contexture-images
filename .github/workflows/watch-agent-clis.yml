@@ -12,6 +12,14 @@
 # execute fresh instead of replaying a cached one. claude (pinned to the `stable` channel, not
 # a version) and agy (no channel to pin at all) have no ARG of their own, so riding along on
 # whichever of these two moves next is how they stay current too.
+#
+# The PR branch is named by TOOL, not by target version (chore/bump-codex, not
+# chore/codex-0.159.2). A version-suffixed name made every new publish open a brand-new PR
+# instead of touching the last one, because the branch from the previous run no longer matched
+# the one this run wanted to create -- codex alone opened three overlapping, un-superseding bump
+# PRs (#30, #34, #35) in the week nothing merged. peter-evans/create-pull-request already updates
+# an existing open PR in place when it pushes to a branch name it recognizes (new commit, new
+# title, new body); a stable name is what lets it recognize one.
 name: Watch agent CLIs
 
 on:
@@ -88,7 +96,7 @@ jobs:
         if: steps.compare.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          branch: chore/${{ matrix.name }}-${{ steps.compare.outputs.latest }}
+          branch: chore/bump-${{ matrix.name }}
           base: main
           title: 'Bump ${{ matrix.name }} to ${{ steps.compare.outputs.latest }}'
           commit-message: 'Bump ${{ matrix.name }} to ${{ steps.compare.outputs.latest }}'
