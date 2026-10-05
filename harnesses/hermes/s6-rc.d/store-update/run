@@ -3,19 +3,18 @@
 # Store update at container start: runs `ctxr-update-store` once, as the runtime user, then stays
 # down. See lib/update-store.sh for what it does and why it can never fail the boot.
 #
-# Opt-in via CTXR_UPDATE_STORE_ENABLED, exactly like HERMES_WEBUI_ENABLED, and for a sharper
-# reason: every container in a stack runs this image, and only ONE of them should push a branch
-# and open a pull request per release. A deployment enables it on its long-lived harness service
-# and nowhere else.
+# On by default; CTXR_UPDATE_STORE_ENABLED=0 (or false/no/off) turns it off. Every container in a
+# stack runs this image, so every one starts this service -- and the script, not the deployment,
+# decides which container does the work: one with a read-only store or no gh credential steps
+# aside, and a lock on the store's git directory lets exactly one of the rest proceed.
 #
 # A longrun rather than a oneshot, deliberately. A oneshot sits in the boot sequence, so a slow
 # fetch or an unreachable GitHub would hold up every service behind it; a longrun starts beside
 # them and the gateway is up while this is still talking to the network. ./finish then exits 125
 # so s6 does not restart it: one run per container start is the contract.
 
-case "${CTXR_UPDATE_STORE_ENABLED:-}" in
-    1|true|TRUE|True|yes|YES|Yes) ;;
-    *)
+case "${CTXR_UPDATE_STORE_ENABLED:-1}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
         exit 0
         ;;
 esac

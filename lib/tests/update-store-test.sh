@@ -68,6 +68,7 @@ STUB
 cat > "$STUBS/gh" <<'STUB'
 #!/bin/sh
 echo "gh $*" >> "$WORK/calls"
+if [ "$1 $2" = "auth status" ]; then [ ! -f "$WORK/gh-unauthed" ]; exit $?; fi
 if [ "$1 $2" = "pr view" ]; then grep -qx "$3" "$WORK/pr-exists" 2>/dev/null; exit $?; fi
 if [ "$1 $2" = "pr create" ]; then
   while [ $# -gt 0 ]; do case "$1" in --head) echo "$2" >> "$WORK/pr-exists";; --title) echo "$2" > "$WORK/pr-title";; esac; shift; done
@@ -87,7 +88,8 @@ check() {
 
 # A store cloned from a bare origin, with the worktrees directory ignored the way init ignores it.
 setup() {
-  rm -rf "$WORK/origin" "$WORK/store" "$WORK/other" "$WORK/calls" "$WORK/pr-exists" "$WORK/pr-title" "$WORK/plan"
+  [ -d "$WORK/store" ] && chmod -R u+w "$WORK/store"
+  rm -rf "$WORK/origin" "$WORK/store" "$WORK/other" "$WORK/calls" "$WORK/pr-exists" "$WORK/pr-title" "$WORK/plan" "$WORK/gh-unauthed"
   git init -q --bare "$WORK/origin"
   git clone -q "$WORK/origin" "$WORK/store" 2>/dev/null
   (cd "$WORK/store" && printf 'schema_version: 10\ngit:\n  default_branch: main\n' > contexture.yaml \
@@ -108,8 +110,44 @@ mv "$WORK/store/.git" "$WORK/store/.git-away"
 check "exit status" "$(run)" "0"
 check "names git's refusal" "$(grep -c 'git refuses it' "$WORK/out")" "1"
 check "does not claim the store is absent" "$(grep -c 'no provisioned store' "$WORK/out")" "0"
-check "never asked ctxr" "$(calls 'ctxr update')" "0"
+check "never asked ctxr" "$(calls '^ctxr update')" "0"
 mv "$WORK/store/.git-away" "$WORK/store/.git"
+
+echo "== containers that cannot act on the store step aside quietly =="
+# The default is on in every container of a stack, so these are normal, not faults.
+if [ "$(id -u)" != 0 ]; then
+  setup; plan change
+  chmod a-w "$WORK/store" "$WORK/store/.git"
+  check "read-only: exit status" "$(run)" "0"
+  check "read-only: says so" "$(grep -c 'read-only in this container' "$WORK/out")" "1"
+  check "read-only: not a warning" "$(grep -c 'WARNING' "$WORK/out")" "0"
+  check "read-only: never asked ctxr" "$(calls '^ctxr update')" "0"
+  chmod u+w "$WORK/store" "$WORK/store/.git"
+else
+  echo "  SKIP: read-only case (root ignores mode bits)"
+fi
+setup; plan change; touch "$WORK/gh-unauthed"
+check "no credential: exit status" "$(run)" "0"
+check "no credential: says so" "$(grep -c 'no gh credential' "$WORK/out")" "1"
+check "no credential: never asked ctxr" "$(calls '^ctxr update')" "0"
+
+echo "== the lock lets one container work, and the others step aside =="
+if command -v flock >/dev/null 2>&1; then
+  setup; plan change
+  # Another container holding the lock: a background holder on the same file.
+  ( flock 8; sleep 5 ) 8>"$WORK/store/.git/ctxr-update-store.lock" &
+  holder=$!
+  sleep 1
+  check "lock held: exit status" "$(run)" "0"
+  check "lock held: steps aside" "$(grep -c 'another container is updating' "$WORK/out")" "1"
+  check "lock held: never asked ctxr" "$(calls '^ctxr update')" "0"
+  wait "$holder"
+  check "lock free: exit status" "$(run)" "0"
+  check "lock free: does the work" "$(calls '^ctxr update')" "1"
+  check "lock free: PR opened" "$(calls 'pr create')" "1"
+else
+  echo "  SKIP: flock not available"
+fi
 
 echo "== a clean canonical clone is pulled, a dirty one is not =="
 setup; plan none
@@ -123,7 +161,7 @@ git clone -q "$WORK/origin" "$WORK/other" 2>/dev/null
 echo "in flight" > "$WORK/store/draft.md"
 check "exit status" "$(run)" "0"
 check "dirty clone not pulled" "$(test -f "$WORK/store/upstream.md" && echo yes || echo no)" "no"
-check "update still ran" "$(calls 'ctxr update')" "1"
+check "update still ran" "$(calls '^ctxr update')" "1"
 check "draft untouched" "$(cat "$WORK/store/draft.md")" "in flight"
 
 echo "== nothing due: no commit, no push, no PR =="
@@ -159,7 +197,7 @@ check "branch is not an ancestor of main" \
 check "exit status" "$(run)" "0"
 check "local branch removed" "$(git -C "$WORK/store" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null && echo kept || echo gone)" "gone"
 check "remote branch removed" "$(git -C "$WORK/store" ls-remote --heads origin "$BRANCH" | wc -l | tr -d ' ')" "0"
-check "update ran twice" "$(calls 'ctxr update')" "2"
+check "update ran twice" "$(calls '^ctxr update')" "2"
 check "no new PR" "$(calls 'pr create')" "0"
 
 echo "== an unmerged, pushed branch with a PR is left alone =="
@@ -169,7 +207,7 @@ run >/dev/null
 check "exit status" "$(run)" "0"
 check "branch kept on origin" "$(git -C "$WORK/store" ls-remote --heads origin "$BRANCH" | wc -l | tr -d ' ')" "1"
 check "no second PR" "$(calls 'pr create')" "0"
-check "update ran once" "$(calls 'ctxr update')" "1"
+check "update ran once" "$(calls '^ctxr update')" "1"
 
 echo "== a pushed branch whose PR was never opened gets one =="
 setup; plan change

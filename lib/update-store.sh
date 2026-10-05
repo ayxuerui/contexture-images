@@ -1,8 +1,12 @@
 #!/bin/sh
 # Bring a Contexture store up to the ctxr this image ships, through a reviewed pull request.
 #
-# Shipped as `ctxr-update-store`, and run once at container start by the opt-in `store-update`
-# s6 service (CTXR_UPDATE_STORE_ENABLED). Safe to run by hand, too, as the runtime user.
+# Shipped as `ctxr-update-store`, and run once at container start by the `store-update` s6
+# service, in every container of a stack unless CTXR_UPDATE_STORE_ENABLED=0. Every container
+# runs this image, so the script elects itself rather than relying on the deployment to pick one:
+# a container with a read-only store, or no gh credential, has nothing to do and says so; of the
+# ones that remain, a lock on the store's git directory lets exactly one do the work, and the
+# others step aside. Safe to run by hand, too, as the runtime user.
 #
 # WHY IT EXISTS. A store here gets a newer ctxr by image pull, not by anyone running the upgrade
 # skill, so nothing re-renders its contexture-owned files afterwards -- the release advisory is
@@ -36,6 +40,7 @@
 #
 # Inputs, all optional:
 #   STORE_DIR                 the store checkout   (default $CONTEXTURE_STORE_ROOT, else /store)
+#   CTXR_UPDATE_STORE_ENABLED 0 = do not run at container start (read by the s6 service, not here)
 #   CTXR_UPDATE_STORE_DRY_RUN 1 = report what would be committed/pushed, and change nothing remote
 #
 # Needs: git, ctxr (>= 0.19.0, for `update --worktree`), jq, gh -- authenticated under $HOME,
@@ -202,9 +207,34 @@ update_store() {
     log "WARNING: $STORE has a contexture.yaml but git refuses it: $(printf '%s' "$_gitdir" | head -1)"
     return 0
   fi
+  # Not every container that runs this image can act on the store, and that is normal rather
+  # than a fault: a read-only mount (a browsing server), or no gh credential to push with. Both
+  # are reported plainly and are not warnings, since a stack with the default on hits them on
+  # every start.
+  _common=$(cd "$STORE" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ ! -w "$STORE" ] || [ ! -w "$_common" ]; then
+    log "$STORE is read-only in this container - nothing to do here"
+    return 0
+  fi
   for _tool in ctxr jq gh; do
     command -v "$_tool" >/dev/null 2>&1 || { log "WARNING: $_tool is not on PATH - skipping"; return 0; }
   done
+  if ! gh auth status >/dev/null 2>&1; then
+    log "no gh credential under HOME=$HOME - nothing to push with, so nothing to do here"
+    return 0
+  fi
+  # One updater per store, across every container sharing it. Non-blocking on purpose: the
+  # first container to start does the work, and one that finds the lock held has nothing to add
+  # -- the same release, the same branch, the same result. The lock lives in the git directory
+  # because that is the one thing every container sharing this store sees as the same file, and
+  # it is released when this process exits, however it exits.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$_common/ctxr-update-store.lock"
+    if ! flock -n 9; then
+      log "another container is updating this store - leaving it to that one"
+      return 0
+    fi
+  fi
   refresh_canonical
   update_once
   if [ $? -eq 2 ]; then

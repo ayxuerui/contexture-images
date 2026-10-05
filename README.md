@@ -270,9 +270,12 @@ schema version, every ctxr command refuses the store until it is migrated, and t
 run the skill that would fix it. Hermes has the same problem with its own `config.yaml`, and
 migrates it at every boot.
 
-`ctxr-update-store` does the store's equivalent, once per container start, when you set
-`CTXR_UPDATE_STORE_ENABLED=1` on **one** service — the long-lived harness, not every container
-running the image:
+`ctxr-update-store` does the store's equivalent, once per container start. It is **on by
+default**; set `CTXR_UPDATE_STORE_ENABLED=0` on a service to turn it off there. Every container in
+a stack runs this image, so the script decides for itself which one does the work. A container
+whose store is read-only, such as a browsing server, or that has no `gh` credential steps aside.
+Of the rest, a lock on the store's git directory lets exactly one proceed, and the others find it
+held and leave it to that one. Then:
 
 1. Pull the canonical clone, fast-forward only, and only when it is clean. A merged migration does
    not reach `ctxr session start` until this checkout moves; a dirty one is in-flight work, so it
@@ -316,7 +319,7 @@ harnesses/hermes/Dockerfile
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
 harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
-harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store once per start, opt-in
+harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store once per start (on unless =0)
 ```
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow
