@@ -57,8 +57,13 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # Other models and a browser driver, available to the agent's shell on every store running this
 # image rather than only the one whose own Dockerfile installed them. A skill that reaches for
 # `codex` or `claude` and does not find it cannot run at all.
-ARG CODEX_VERSION=0.156.1
+ARG CODEX_VERSION=0.160.0
 ARG AGENT_BROWSER_VERSION=0.38.2
+# Both watched by watch-agent-clis.yml, like the two above. CLAUDE_VERSION is an exact pin;
+# AGY_VERSION is a cache key and an expectation, since agy's installer cannot be pinned. See
+# install-agent-clis.sh.
+ARG CLAUDE_VERSION=2.1.285
+ARG AGY_VERSION=1.2.14
 ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
 RUN TOOLCHAIN_HOME="${CLAUDE_TOOLCHAIN_HOME}" /tmp/install-agent-clis.sh \
