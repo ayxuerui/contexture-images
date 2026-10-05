@@ -1,0 +1,29 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Store update at container start: runs `ctxr-update-store` once, as the runtime user, then stays
+# down. See lib/update-store.sh for what it does and why it can never fail the boot.
+#
+# Opt-in via CTXR_UPDATE_STORE_ENABLED, exactly like HERMES_WEBUI_ENABLED, and for a sharper
+# reason: every container in a stack runs this image, and only ONE of them should push a branch
+# and open a pull request per release. A deployment enables it on its long-lived harness service
+# and nowhere else.
+#
+# A longrun rather than a oneshot, deliberately. A oneshot sits in the boot sequence, so a slow
+# fetch or an unreachable GitHub would hold up every service behind it; a longrun starts beside
+# them and the gateway is up while this is still talking to the network. ./finish then exits 125
+# so s6 does not restart it: one run per container start is the contract.
+
+case "${CTXR_UPDATE_STORE_ENABLED:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# Same HOME the agent's tool calls use, and where ctxr-provision persisted the gh credential.
+# with-contenv repopulates HOME as /root, so it is reset before the privilege drop.
+export HOME="${HERMES_HOME:-/opt/data}/home"
+
+# Skip the drop when already non-root.
+[ "$(id -u)" = 0 ] || exec ctxr-update-store
+exec s6-setuidgid hermes ctxr-update-store

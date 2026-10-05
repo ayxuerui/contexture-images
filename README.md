@@ -262,6 +262,44 @@ For something occasional, upstream's own advice applies inside the container: `n
 run as the agent's user with no install at all. Anything needed on every start belongs in an
 image built `FROM` this one.
 
+## Keeping the store current after an image bump
+
+A newer image means a newer ctxr, and nothing else moves the store along with it: the release
+advisory stays silent, because installed now equals published. If the release raised the store's
+schema version, every ctxr command refuses the store until it is migrated, and the agent cannot
+run the skill that would fix it. Hermes has the same problem with its own `config.yaml`, and
+migrates it at every boot.
+
+`ctxr-update-store` does the store's equivalent, once per container start, when you set
+`CTXR_UPDATE_STORE_ENABLED=1` on **one** service — the long-lived harness, not every container
+running the image:
+
+1. Pull the canonical clone, fast-forward only, and only when it is clean. A merged migration does
+   not reach `ctxr session start` until this checkout moves; a dirty one is in-flight work, so it
+   is left alone.
+2. `ctxr update --worktree`. This migrates the store if its schema is behind, and re-renders the
+   contexture-owned files, on a branch named for the release, in a worktree of its own. It never
+   writes the canonical clone, and does nothing at all when nothing is due.
+3. If anything changed, commit it (through the store's own pre-commit hook, like any other
+   change), push the branch and open a pull request, using the agent's own `gh` credential.
+
+The result is a PR, never a write in place: a store is reviewed history. Merge it, and the next
+start pulls it in.
+
+The branch is named for the release, so every start of one image finds the same branch. One that
+is merged is recognized by **patch**, through `git cherry`, and deleted locally and on the remote
+so the next release starts clean. A squash merge never leaves the branch as an ancestor of main,
+so an ancestry check would leave it in place forever. A branch whose push failed is pushed on
+the next start, and a PR is opened only when the branch has none.
+
+It never fails the boot. Every failure is a log line, and the next start picks up from whatever
+git shows. `CTXR_UPDATE_STORE_DRY_RUN=1` reports what it would commit, push and open, without
+doing any of it. It can also be run by hand as the runtime user:
+
+```sh
+docker exec -u hermes -e HOME=/opt/data/home <container> ctxr-update-store
+```
+
 ## Layout
 
 ```
@@ -272,11 +310,13 @@ lib/install-backup-tools.sh           restic + rclone: what a BACKUP needs
 lib/provision-store.sh                shipped as `ctxr-provision`: one-shot store setup
 lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
 lib/schedule.sh                       shipped as `harness-schedule`: run a command on an interval
+lib/update-store.sh                   shipped as `ctxr-update-store`: re-render/migrate the store as a PR
 lib/tests/                            marker-extracted guard tests; CI runs them before the build
 harnesses/hermes/Dockerfile
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
 harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
+harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store once per start, opt-in
 ```
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow
