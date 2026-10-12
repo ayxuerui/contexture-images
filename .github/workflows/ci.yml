@@ -58,6 +58,16 @@ jobs:
       - name: Run the store-update regression tests
         run: sh lib/tests/update-store-test.sh
 
+  remote-runtime:
+    name: remote runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test opt-in configuration and shutdown
+        run: python3 lib/tests/harness-remote-test.py
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest
@@ -93,7 +103,12 @@ jobs:
           file: harnesses/${{ matrix.harness }}/Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
+          tags: contexture-hermes:ci
           build-args: |
             CTXR_VERSION=${{ steps.ctxr.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Test remote services under s6-overlay
+        run: python3 lib/tests/harness-remote-container-test.py contexture-hermes:ci

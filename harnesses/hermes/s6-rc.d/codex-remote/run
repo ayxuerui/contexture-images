@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# Optional remote harness; preserve /init and Hermes's existing supervised services.
+set -eu
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /usr/local/bin/harness-remote run codex
+exec /command/s6-setuidgid hermes /opt/hermes/.venv/bin/python /usr/local/bin/harness-remote run codex
