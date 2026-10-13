@@ -24,6 +24,97 @@ RUN chmod +x /usr/local/bin/setup.sh
 The image deliberately declares no `ENTRYPOINT`, `CMD`, `EXPOSE`, `HEALTHCHECK` or `VOLUME` —
 those are deployment choices, and baking them in would silently override your compose file.
 
+## Deploying a store with the shared compose file
+
+`harnesses/hermes/compose.yaml` is the whole deployment: provisioning, the `agents` service
+(Hermes, its dashboard and WebUI, and any remote agents), the read-only `serve` reader, and the
+backup one-shots and schedulers. A store includes it remotely instead of maintaining its own
+copy, so a fix made here reaches every store by moving one pin.
+
+```yaml
+# compose.yaml in the store
+name: my-store
+include:
+  - path: https://github.com/ayxuerui/contexture-images.git#${CONTEXTURE_IMAGES_REF}:harnesses/hermes/compose.yaml
+```
+
+```sh
+# .env beside it
+CONTEXTURE_IMAGES_REF=<full SHA of a released commit, see below>
+API_SERVER_KEY=...
+HERMES_WEBUI_ALLOWED_ORIGINS=https://agents.example.com
+```
+
+**One pin.** `CONTEXTURE_IMAGES_REF` is a full commit SHA of this repo. It selects this compose
+file and the image built from the same commit (`contexture-hermes:<version>-<sha>`), so the two
+cannot drift apart. Pin a commit whose release succeeded:
+
+```sh
+gh run list -R ayxuerui/contexture-images -w release.yml --status success -L 5 \
+  --json headSha,createdAt -q '.[] | "\(.createdAt) \(.headSha)"'
+```
+
+A branch name, a `v<version>` tag or a commit that published nothing fails at pull time. That is
+deliberate: `v<version>` tags are written once and never move, while the image they name is
+rebuilt, so a tag pin would pair an old compose file with a newer image.
+
+Compose fetches the file on first use and caches it by commit, so later commands work offline.
+Verified with Docker Compose v5.1.3; check `docker compose version` on the host.
+
+**What stays in the store** goes in `compose.override.yaml`, which Compose merges over the
+included services. Environment entries are added to the base's; lists such as `ports` are
+appended:
+
+```yaml
+services:
+  agents:
+    container_name: my-store-hermes      # keep an existing name for scripts and tunnels
+    ports:
+      - "127.0.0.1:8642:8642"
+    environment:
+      HERMES_WEBUI_TRUST_FORWARDED_HOST: "1"   # only behind a proxy you run
+      HERMES_WEBUI_TRUST_FORWARDED_PROTO: "1"
+      HERMES_WEBUI_TRUST_FORWARDED_FOR: "1"
+      HERMES_WEBUI_SSE_CHUNKED: "1"            # a buffering proxy such as Cloudflare
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+volumes:
+  data:
+    name: my-store_my-store-data          # an existing volume, by its full name
+    external: true
+```
+
+The base deliberately leaves out everything that differs between deployments: published ports,
+ingress networks, container names, forwarded-header trust, chat platforms, WebUI sign-in,
+browser endpoints. Forwarded headers are trusted only when the WebUI is reachable solely through
+your own proxy, so that switch lives beside the ingress that justifies it.
+
+**Moving an existing store.** The services are named `agents`, `serve`, `workspace-init`,
+`harness-backup`, `harness-config-push`, `harness-backup-cron` and `harness-config-cron`, with
+volumes `data` (HERMES_HOME, provider logins included) and `store`. Map each existing volume by
+its full name with `external: true`; Compose then fails instead of silently creating an empty
+one. Keep old service names reachable with `container_name`, or with network aliases on the
+ingress network. `docker compose config` shows the merged result before anything starts.
+
+| Variable | Default | |
+|---|---|---|
+| `CONTEXTURE_IMAGES_REF` | required | Commit SHA that pins this file and the image |
+| `API_SERVER_KEY` | required | Gateway API key |
+| `HERMES_WEBUI_ALLOWED_ORIGINS` | required | Comma-separated public origins, with scheme |
+| `HERMES_WEBUI_PASSWORD` | blank | Optional WebUI password |
+| `HARNESS_REMOTE_AGENTS` | blank | Remote agents to run; see below |
+| `HARNESS_REMOTE_{CLAUDE,CODEX,AGY}_ARGS` | blank | JSON argument overrides; blank uses the defaults |
+| `AGENTS_MEMORY_LIMIT`, `AGENTS_CPUS` | `6G`, `3.0` | Budget for the `agents` container |
+| `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
+| `PUID`, `PGID` | `10000` | Runtime uid/gid |
+| `REPO_URL`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` | blank | `workspace-init` only; it names what is missing |
+| `HARNESS_BACKUP_*`, `RESTIC_PACK_SIZE`, `RCLONE_CONFIG_GDRIVE_*` | see the file | Backups; a blank destination is off |
+| `HARNESS_CONFIG_REPO`, `HARNESS_CONFIG_DRY_RUN` | blank | Config push |
+| `HARNESS_BACKUP_INTERVAL`, `HARNESS_CONFIG_INTERVAL`, `HARNESS_NOTIFY_TARGET` | daily, 6h, blank | Schedulers |
+
+CI checks that the file's image version equals `CTXR_VERSION` (the bump bot updates both), that
+it renders with only the required variables, that it stays portable, and that a store's include
+and override merge as described here.
+
 ## Running several harnesses in one container
 
 The Hermes image can also supervise Claude Code, Codex and agy remote control alongside
@@ -390,12 +481,15 @@ lib/provision-store.sh                shipped as `ctxr-provision`: one-shot stor
 lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
 lib/schedule.sh                       shipped as `harness-schedule`: run a command on an interval
 lib/update-store.sh                   shipped as `ctxr-update-store`: re-render/migrate the store as a PR
+lib/harness-remote.py                 shipped as `harness-remote`: optional remote agents under s6
 lib/tests/                            marker-extracted guard tests; CI runs them before the build
 harnesses/hermes/Dockerfile
+harnesses/hermes/compose.yaml         the shared deployment stores include remotely
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
 harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
 harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store once per start (on unless =0)
+harnesses/hermes/s6-rc.d/*-remote/     Claude Code, Codex and agy remote control, off unless selected
 ```
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow

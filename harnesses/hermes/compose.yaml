@@ -1,0 +1,265 @@
+# Shared deployment for a Contexture store on the contexture-hermes image.
+#
+# A store does not copy this file. It INCLUDES it, remotely, pinned to one commit:
+#
+#   name: my-store
+#   include:
+#     - path: https://github.com/ayxuerui/contexture-images.git#${CONTEXTURE_IMAGES_REF}:harnesses/hermes/compose.yaml
+#
+# and keeps only what is genuinely its own in a compose.override.yaml beside it: published
+# ports, ingress networks, container names, existing volume names, chat integrations. See the
+# README section "Deploying a store with the shared compose file".
+#
+# ONE pin. CONTEXTURE_IMAGES_REF is a full commit SHA of this repo, and it selects both this
+# file AND the image the release workflow built from that same commit (tagged
+# <ctxr version>-<sha>). The compose and the image therefore cannot drift apart, which a copied
+# compose file plus a separately pinned image tag did -- repeatedly. A ref with no published
+# image (a branch name, or a commit whose merge did not trigger a release) fails at pull time
+# rather than running a mismatched pair.
+#
+# The version below is asserted equal to CTXR_VERSION by CI and bumped with it by
+# watch-ctxr.yml; never edit one without the other.
+#
+# Portable by construction: no published ports, no host paths, no container names, no
+# deployment-specific defaults. Everything here is identical for every store.
+
+x-image: &image ghcr.io/ayxuerui/contexture-hermes:0.22.0-${CONTEXTURE_IMAGES_REF:?CONTEXTURE_IMAGES_REF must be a full contexture-images commit SHA}
+
+# The one-shots and schedulers override the entrypoint, so s6 never starts and with-contenv
+# never runs: HOME and HERMES_HOME are set explicitly rather than inherited.
+x-harness-home: &harness-home
+  HOME: /opt/data/home
+  HERMES_HOME: /opt/data
+  HERMES_DATA_DIR: /opt/data
+
+# Every value uses `:-`, never `:?`. Compose interpolates the whole model on every command
+# regardless of --profile, so a `:?` on a profile-gated service would break `up`, `ps` and
+# `logs` for any store that has not configured backups. The scripts carry their own guards,
+# and a blank destination is the documented off switch.
+x-backup-env: &backup-env
+  <<: *harness-home
+  HARNESS_BACKUP_DESTINATION: ${HARNESS_BACKUP_DESTINATION:-}
+  HARNESS_BACKUP_PASSWORD_FILE: ${HARNESS_BACKUP_PASSWORD_FILE:-/opt/data/.restic-password}
+  HARNESS_BACKUP_KEEP: ${HARNESS_BACKUP_KEEP:---keep-daily 7 --keep-weekly 8 --keep-monthly 6}
+  # Staged on the same filesystem as the live state.db; refuse rather than risk ENOSPC under it.
+  HARNESS_BACKUP_MIN_FREE_MB: ${HARNESS_BACKUP_MIN_FREE_MB:-2048}
+  RESTIC_PACK_SIZE: ${RESTIC_PACK_SIZE:-64}
+  # rclone resolves the remote from RCLONE_CONFIG_<NAME>_<KEY>, so no rclone.conf lives inside
+  # the volume being backed up. Unused unless HARNESS_BACKUP_DESTINATION names `gdrive:`.
+  RCLONE_CONFIG_GDRIVE_TYPE: drive
+  RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${RCLONE_CONFIG_GDRIVE_CLIENT_ID:-}
+  RCLONE_CONFIG_GDRIVE_CLIENT_SECRET: ${RCLONE_CONFIG_GDRIVE_CLIENT_SECRET:-}
+  RCLONE_CONFIG_GDRIVE_SCOPE: ${RCLONE_CONFIG_GDRIVE_SCOPE:-drive.file}
+  RCLONE_CONFIG_GDRIVE_TOKEN: ${RCLONE_CONFIG_GDRIVE_TOKEN:-}
+
+x-config-env: &config-env
+  <<: *harness-home
+  # No default: it names a deployment. Blank, and the script's guard says what is missing.
+  HARNESS_CONFIG_REPO: ${HARNESS_CONFIG_REPO:-}
+
+services:
+  # One-off provisioning: clone the store into the store volume and persist the gh credential.
+  #   docker compose --profile init run --rm workspace-init
+  workspace-init:
+    image: *image
+    profiles: ["init"]
+    restart: "no"
+    entrypoint: ["ctxr-provision"]
+    environment:
+      REPO_URL: ${REPO_URL:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+      CONTEXTURE_STORE_ROOT: /store
+      PUID: ${PUID:-10000}
+      PGID: ${PGID:-10000}
+      # The portable skills location. `$$` keeps the variable for Hermes to expand at runtime.
+      HERMES_SKILLS_EXTERNAL_DIRS: '["$$CONTEXTURE_STORE_ROOT/.agents/skills"]'
+    volumes:
+      - store:/store
+      - data:/opt/data
+
+  # Hermes (gateway, dashboard, WebUI, per-profile gateways) and, when HARNESS_REMOTE_AGENTS
+  # selects them, Claude Code, Codex and agy remote control -- all under the image's s6
+  # supervisor, sharing one toolchain. Never override this service's entrypoint.
+  agents:
+    image: *image
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    stop_grace_period: 30s
+    # Required by the Playwright/Chromium browser tools.
+    shm_size: "1gb"
+    environment:
+      CONTEXTURE_STORE_ROOT: /store
+      PUID: ${PUID:-10000}
+      PGID: ${PGID:-10000}
+      API_SERVER_ENABLED: "1"
+      # The gateway binds loopback by default, which nothing outside the container can reach.
+      API_SERVER_HOST: "0.0.0.0"
+      # Every SECONDARY Hermes profile must pin `platforms.api_server.enabled: false` in its
+      # config.yaml. These values are container-wide, so a profile that does not mention them
+      # inherits API_SERVER_KEY, force-enables its API server and races the default profile for
+      # this port -- and the WebUI then silently runs inside whichever profile won.
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${API_SERVER_KEY:?API_SERVER_KEY is required}
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+      # Dashboard auth is not configurable by environment: it is registered only by
+      # dashboard.basic_auth.* in $HERMES_HOME/config.yaml, and the dashboard refuses to bind
+      # 0.0.0.0 without it. The healthcheck below is what catches that.
+      #
+      # The WebUI runs the agent in-process. HERMES_WEBUI_CHAT_BACKEND is deliberately unset;
+      # `gateway` would route chat back through the API server and its approval-id mismatch.
+      HERMES_WEBUI_ENABLED: "1"
+      HERMES_WEBUI_HOST: "0.0.0.0"
+      HERMES_WEBUI_PORT: "8787"
+      HERMES_WEBUI_STATE_DIR: /opt/data/webui
+      HERMES_WEBUI_DEFAULT_WORKSPACE: /store
+      # Only what the System panel's health pill probes; chat does not route through it.
+      HERMES_API_URL: http://127.0.0.1:8642
+      HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-}
+      # Hard-required: the WebUI rejects any Origin it was not told about, and entries without
+      # a scheme are ignored. List every public origin, comma-separated.
+      HERMES_WEBUI_ALLOWED_ORIGINS: ${HERMES_WEBUI_ALLOWED_ORIGINS:?HERMES_WEBUI_ALLOWED_ORIGINS is required}
+      # Off unless selected; see the README's remote-agent section.
+      HARNESS_REMOTE_AGENTS: ${HARNESS_REMOTE_AGENTS:-}
+      HARNESS_REMOTE_HOME: /opt/data/home
+      HARNESS_REMOTE_CLAUDE_ARGS: ${HARNESS_REMOTE_CLAUDE_ARGS:-}
+      HARNESS_REMOTE_CODEX_ARGS: ${HARNESS_REMOTE_CODEX_ARGS:-}
+      HARNESS_REMOTE_AGY_ARGS: ${HARNESS_REMOTE_AGY_ARGS:-}
+    volumes:
+      - data:/opt/data
+      - store:/store
+    healthcheck:
+      # Each probe guards something that can fail while the container stays up:
+      #   provisioning ran; the store's skills directory is where skills.external_dirs points
+      #   (an unexpanded or renamed variable silently drops every store skill); the gateway,
+      #   dashboard and WebUI each serve (any HTTP response counts, 302 to /login included);
+      #   every selected remote agent has a live process (disabled agents pass).
+      # `$$` defers the variable to the container; a single `$` would bake in the host's value.
+      test: ["CMD-SHELL", "test -f /store/.contexture-initialized && test -d \"$$CONTEXTURE_STORE_ROOT/.agents/skills\" && curl -sS -o /dev/null http://127.0.0.1:8642/ && curl -sS -o /dev/null http://127.0.0.1:9119/ && curl -sS -o /dev/null http://127.0.0.1:8787/ && harness-remote status"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          # One budget for Hermes, its profiles, the WebUI and any remote agents.
+          memory: ${AGENTS_MEMORY_LIMIT:-6G}
+          cpus: "${AGENTS_CPUS:-3.0}"
+
+  # Read-only browsing of the store. Same image, so `ctxr` here is byte-identical to the agent's.
+  # Bypasses s6: `ctxr serve` is one foreground process.
+  serve:
+    image: *image
+    restart: unless-stopped
+    entrypoint: ["ctxr"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "/store"]
+    user: "${PUID:-10000}:${PGID:-10000}"
+    volumes:
+      # `ctxr serve` never writes; read-only is defence in depth.
+      - store:/store:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
+  # --- Harness home backup ------------------------------------------------------------------
+  # Two one-shots, invoked deliberately, and two schedulers that run them on a cadence. They
+  # cover different failures: config-push commits $HERMES_HOME's CONFIG to a private repo so it
+  # can be diffed, with no credentials; harness-backup snapshots the whole home to restic,
+  # credentials included and encrypted, and is the actual recovery path.
+  #
+  #   docker compose --profile backup run --rm harness-backup
+  #   docker compose --profile backup run --rm harness-config-push
+  #
+  # All run as the runtime uid: root-owned objects under .git or a root-created staging
+  # directory are ones the agent cannot write later. /store is absent from all four -- GitHub
+  # already backs it up.
+  harness-backup:
+    image: *image
+    profiles: ["backup"]
+    restart: "no"
+    entrypoint: ["harness-backup"]
+    user: "${PUID:-10000}:${PGID:-10000}"
+    environment:
+      <<: *backup-env
+    volumes:
+      - data:/opt/data
+
+  harness-config-push:
+    image: *image
+    profiles: ["backup"]
+    restart: "no"
+    entrypoint: ["harness-config-push"]
+    user: "${PUID:-10000}:${PGID:-10000}"
+    environment:
+      <<: *config-env
+      # 1 prints what WOULD be committed and stops. Use it on a store's first run.
+      HARNESS_CONFIG_DRY_RUN: ${HARNESS_CONFIG_DRY_RUN:-}
+    volumes:
+      - data:/opt/data
+
+  # Containers rather than Hermes cron: Docker restarts on process exit, not on a failed
+  # healthcheck, so a wedged-but-alive gateway would stop its own ticker and take the backups
+  # and the channel that reports them missing down together.
+  harness-backup-cron:
+    image: *image
+    restart: unless-stopped
+    entrypoint: ["harness-schedule"]
+    command: ["harness-backup"]
+    user: "${PUID:-10000}:${PGID:-10000}"
+    environment:
+      <<: *backup-env
+      # Daily, aligned to 00:00 UTC by harness-schedule's slot arithmetic.
+      HARNESS_SCHEDULE_INTERVAL: ${HARNESS_BACKUP_INTERVAL:-86400}
+      HARNESS_SCHEDULE_NAME: harness-backup
+      # Blank logs only. Use the numeric target, not a `hermes send --list` display label.
+      HARNESS_SCHEDULE_NOTIFY: ${HARNESS_NOTIFY_TARGET:-}
+    volumes:
+      - data:/opt/data
+    deploy:
+      resources:
+        limits:
+          # restic and rclone are children and share this; rclone buffers 64 MiB packs.
+          memory: 1G
+          cpus: "1.0"
+
+  # Separate from the backup scheduler: the cadences differ, and a config-push failure must
+  # never abort the snapshot.
+  harness-config-cron:
+    image: *image
+    restart: unless-stopped
+    entrypoint: ["harness-schedule"]
+    command: ["harness-config-push"]
+    user: "${PUID:-10000}:${PGID:-10000}"
+    environment:
+      <<: *config-env
+      HARNESS_SCHEDULE_INTERVAL: ${HARNESS_CONFIG_INTERVAL:-21600}
+      HARNESS_SCHEDULE_NAME: harness-config-push
+      HARNESS_SCHEDULE_NOTIFY: ${HARNESS_NOTIFY_TARGET:-}
+    volumes:
+      - data:/opt/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+volumes:
+  # HERMES_HOME, including every provider login under home/. NEVER `docker compose down -v`:
+  # only interactive re-authentication recovers what this holds. A store migrating from its
+  # own compose file maps this to its existing volume (`name:` + `external: true`) so Compose
+  # fails rather than silently creating an empty one.
+  data:
+  # The store checkout the agents work in.
+  store:
