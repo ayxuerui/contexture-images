@@ -24,6 +24,82 @@ RUN chmod +x /usr/local/bin/setup.sh
 The image deliberately declares no `ENTRYPOINT`, `CMD`, `EXPOSE`, `HEALTHCHECK` or `VOLUME` —
 those are deployment choices, and baking them in would silently override your compose file.
 
+## Running several harnesses in one container
+
+The Hermes image can also supervise Claude Code, Codex and agy remote control alongside
+Hermes, its profiles, dashboard and WebUI. It uses the existing s6-overlay startup path;
+keep the image entrypoint and the usual `gateway run` command. Remote services are
+**off by default** and do not change one-shot containers or existing deployments.
+
+```yaml
+services:
+  agents:
+    image: ghcr.io/ayxuerui/contexture-hermes:<published-tag>
+    command: ["gateway", "run"]
+    environment:
+      HARNESS_REMOTE_AGENTS: claude,codex,agy
+      CONTEXTURE_STORE_ROOT: /store
+      HARNESS_REMOTE_HOME: /opt/data/home
+      HARNESS_REMOTE_CLAUDE_ARGS: '["--spawn","same-dir","--permission-mode","plan","--name","my-store"]'
+    volumes:
+      - store:/store
+      - data:/opt/data
+```
+
+`HARNESS_REMOTE_AGENTS` is a comma-separated subset of `claude,codex,agy`; blank means
+none. Unknown names fail validation. Enabled agents require an existing absolute
+`CONTEXTURE_STORE_ROOT` and home directory. Remote children run as the image's `hermes`
+user, after the normal UID/GID setup, with the selected store as their working directory.
+`HARNESS_REMOTE_HOME` defaults to `$HERMES_HOME/home` (`/opt/data/home`), the same home
+the store-update service and Hermes tool calls use; it supplies CLI credentials and
+session history, while Hermes keeps its separate `HERMES_HOME`. Credential files remain
+in each harness's native directories; they are never baked into the image.
+
+`HARNESS_REMOTE_<AGENT>_ARGS` overrides arguments after `<agent> remote-control` as a
+JSON array of strings, passed directly without shell evaluation. Defaults are:
+
+| Agent | Default arguments |
+|---|---|
+| Claude | `--spawn same-dir --permission-mode plan` |
+| Codex | `--no-daemon -c sandbox_mode="read-only" -c approval_policy="on-request"` |
+| agy | `serve` |
+
+Codex must remain in foreground mode; daemon-management subcommands are rejected.
+agy's `serve` is the internal foreground OS-service entrypoint, verified to dispatch
+in 1.3.3. Its public `start` command installs an OS service and needs systemd. Treat
+this integration as version-sensitive: verify dispatch and actual authenticated
+remote connectivity after agy upgrades. Its installer cannot pin a release exactly.
+No permission-bypass flag is added; agy's daemon controls its own session policy.
+
+Each remote agent has a separate s6 slot (`/run/service/{claude,codex,agy}-remote`),
+tagged logs, a ten-second restart backoff and bounded process-group shutdown. A
+failed agent restarts without interrupting its siblings. Container upgrades, restarts
+and memory exhaustion can affect every harness; budget resources for concurrent use.
+Hermes continues to use its existing per-profile supervision.
+
+```sh
+docker exec <container> harness-remote check-config
+docker exec <container> harness-remote status
+docker exec <container> /command/s6-svc -r /run/service/codex-remote
+docker exec <container> codex remote-control pair
+```
+
+`status` returns nonzero if any enabled remote agent lacks a live child, including
+retry backoff. Disabled agents are skipped. Add it to the deployment's existing
+Hermes healthcheck; it checks **process health**, not authentication or relay readiness.
+A live disconnected process can pass. Complete CLI login and verify each provider's
+remote client separately. agy CLI login is distinct from editor login and may need
+Linux keyring support; no authentication state is provisioned by this capability.
+
+All harnesses share a network namespace. Keep remote transports outbound/local and
+expose only the deployment's intended authenticated Hermes endpoints. Keep backup
+schedulers and a read-only store server separate if they must survive agent failures.
+Do not run two remote servers using the same machine identity during cutover.
+
+Validation: `python3 lib/tests/harness-remote-test.py` needs no image or credentials;
+`python3 lib/tests/harness-remote-container-test.py <image>` exercises real s6-overlay
+with fake agents, no network and disposable state. CI runs both.
+
 ## Backing up the harness home
 
 A Contexture store is version-controlled by definition. The harness home it runs against —

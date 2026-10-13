@@ -261,6 +261,24 @@ RUN set -eux; \
     STORE_DIR=/nonexistent ctxr-update-store; \
     ctxr update --help 2>&1 | grep -q -- '--worktree'
 
+# --- Optional remote harnesses in the existing supervisor ----------------------------------
+# Off by default. A deployment selects HARNESS_REMOTE_AGENTS; no extra container or
+# replacement PID 1 is needed. Preserve Hermes startup, UID mapping and profile reconciliation.
+COPY lib/harness-remote.py /usr/local/bin/harness-remote
+COPY harnesses/hermes/s6-rc.d/claude-remote /etc/s6-overlay/s6-rc.d/claude-remote
+COPY harnesses/hermes/s6-rc.d/codex-remote /etc/s6-overlay/s6-rc.d/codex-remote
+COPY harnesses/hermes/s6-rc.d/agy-remote /etc/s6-overlay/s6-rc.d/agy-remote
+RUN set -eux; \
+    chmod +x /usr/local/bin/harness-remote; \
+    /opt/hermes/.venv/bin/python -c 'compile(open("/usr/local/bin/harness-remote").read(), "harness-remote", "exec")'; \
+    harness-remote check-config; \
+    for agent in claude codex agy; do \
+      chmod +x "/etc/s6-overlay/s6-rc.d/${agent}-remote/run" "/etc/s6-overlay/s6-rc.d/${agent}-remote/finish"; \
+      sh -n "/etc/s6-overlay/s6-rc.d/${agent}-remote/run"; \
+      sh -n "/etc/s6-overlay/s6-rc.d/${agent}-remote/finish"; \
+      touch "/etc/s6-overlay/s6-rc.d/user/contents.d/${agent}-remote"; \
+    done
+
 # --- Bundled document-skill Python deps -----------------------------------------------------
 # The agent's bundled productivity skills (pdf, docx, xlsx, powerpoint) name these as
 # prerequisites in their own SKILL.md, but none of them ship in the upstream agent venv. Absent
