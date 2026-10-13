@@ -58,6 +58,18 @@ jobs:
       - name: Run the store-update regression tests
         run: sh lib/tests/update-store-test.sh
 
+  # The shared compose file stores include remotely. Needs only the runner's Docker Compose:
+  # version parity with CTXR_VERSION, portability, and a store's include + override merge.
+  compose:
+    name: shared compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test the shared compose file
+        run: python3 -B lib/tests/compose-test.py
+
   remote-runtime:
     name: remote runtime
     runs-on: ubuntu-latest

@@ -34,8 +34,9 @@ def enabled():
 
 
 def command(name):
-    value = os.environ.get(f'HARNESS_REMOTE_{name.upper()}_ARGS')
-    args = json.loads(value) if value is not None else DEFAULT_ARGS[name]
+    # Blank means unset: a Compose file passes the variable through as an empty string.
+    value = os.environ.get(f'HARNESS_REMOTE_{name.upper()}_ARGS', '').strip()
+    args = json.loads(value) if value else DEFAULT_ARGS[name]
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise ValueError(f'{name} args must be a JSON array of strings')
     # Background launchers make supervision report a dead service as healthy.
