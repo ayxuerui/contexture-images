@@ -40,7 +40,7 @@ include:
 
 ```sh
 # .env beside it
-CONTEXTURE_IMAGES_REF=85846582cf4128db7ea579342abd5be2f8ee4118
+CONTEXTURE_IMAGES_REF=<full SHA of a released commit, see below>
 API_SERVER_KEY=...
 HERMES_WEBUI_ALLOWED_ORIGINS=https://agents.example.com
 ```
