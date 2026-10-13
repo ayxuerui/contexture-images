@@ -57,6 +57,10 @@ class Configuration(unittest.TestCase):
         self.assertIn('--permission-mode', remote.DEFAULT_ARGS['claude'])
         self.assertIn('sandbox_mode="read-only"', remote.DEFAULT_ARGS['codex'])
 
+    def test_blank_args_use_defaults(self):
+        os.environ['HARNESS_REMOTE_CODEX_ARGS'] = ''
+        self.assertEqual(remote.command('codex')[2:], remote.DEFAULT_ARGS['codex'])
+
     def test_home_follows_hermes_home(self):
         del os.environ['HARNESS_REMOTE_HOME']
         self.assertEqual(remote.home(), '/opt/data/home')
