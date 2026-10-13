@@ -10,8 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / 'harnesses' / 'hermes' / 'compose.yaml'
-SHA = '0123456789abcdef0123456789abcdef01234567'
-REQUIRED = {'CONTEXTURE_IMAGES_REF': SHA, 'API_SERVER_KEY': 'k',
+REQUIRED = {'API_SERVER_KEY': 'k',
             'HERMES_WEBUI_ALLOWED_ORIGINS': 'https://store.example'}
 
 
@@ -31,22 +30,17 @@ class Base(unittest.TestCase):
 
     def test_version_matches_ctxr_version(self):
         version = (ROOT / 'CTXR_VERSION').read_text().strip()
-        pinned = re.findall(r'contexture-hermes:([^-\s]+)-\$\{CONTEXTURE_IMAGES_REF', BASE.read_text())
+        pinned = re.findall(r'^x-image: &image ghcr\.io/ayxuerui/contexture-hermes:(\S+)$', BASE.read_text(), re.M)
         self.assertEqual(pinned, [version])
 
-    def test_one_ref_pins_every_image(self):
+    def test_every_service_pulls_the_version_tag(self):
+        # The tag is rebuilt in place, so a cached build must never outlive a newer compose file.
         model = self.render('--profile', 'init', '--profile', 'backup')
         version = (ROOT / 'CTXR_VERSION').read_text().strip()
-        images = {service['image'] for service in model['services'].values()}
-        self.assertEqual(images, {f'ghcr.io/ayxuerui/contexture-hermes:{version}-{SHA}'})
+        self.assertEqual({s['image'] for s in model['services'].values()},
+                         {f'ghcr.io/ayxuerui/contexture-hermes:{version}'})
+        self.assertEqual({s.get('pull_policy') for s in model['services'].values()}, {'always'})
         self.assertEqual(len(model['services']), 7)
-
-    def test_ref_is_required(self):
-        env = dict(REQUIRED)
-        del env['CONTEXTURE_IMAGES_REF']
-        result = config(BASE.parent, '-f', BASE.name, env=env)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('CONTEXTURE_IMAGES_REF', result.stderr)
 
     def test_portable(self):
         for name, service in self.render('--profile', 'init', '--profile', 'backup')['services'].items():

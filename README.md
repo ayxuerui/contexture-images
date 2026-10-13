@@ -29,37 +29,40 @@ those are deployment choices, and baking them in would silently override your co
 `harnesses/hermes/compose.yaml` is the whole deployment: provisioning, the `agents` service
 (Hermes, its dashboard and WebUI, and any remote agents), the read-only `serve` reader, and the
 backup one-shots and schedulers. A store includes it remotely instead of maintaining its own
-copy, so a fix made here reaches every store by moving one pin.
+copy, so a fix made here reaches every store on its next `up`.
 
 ```yaml
 # compose.yaml in the store
 name: my-store
 include:
-  - path: https://github.com/ayxuerui/contexture-images.git#${CONTEXTURE_IMAGES_REF}:harnesses/hermes/compose.yaml
+  - https://github.com/ayxuerui/contexture-images.git#main:harnesses/hermes/compose.yaml
 ```
 
 ```sh
 # .env beside it
-CONTEXTURE_IMAGES_REF=<full SHA of a released commit, see below>
 API_SERVER_KEY=...
 HERMES_WEBUI_ALLOWED_ORIGINS=https://agents.example.com
 ```
 
-**One pin.** `CONTEXTURE_IMAGES_REF` is a full commit SHA of this repo. It selects this compose
-file and the image built from the same commit (`contexture-hermes:<version>-<sha>`), so the two
-cannot drift apart. Pin a commit whose release succeeded:
+**No pin in the store.** This repo decides the ctxr version: the shared file names the image by
+it (`contexture-hermes:<version>`), CI asserts that equals `CTXR_VERSION`, and the bump bot
+updates both. A store brings its schema up to a new ctxr through the pull request
+`ctxr-update-store` opens at container start, exactly as when a store pins a tag by hand.
 
-```sh
-gh run list -R ayxuerui/contexture-images -w release.yml --status success -L 5 \
-  --json headSha,createdAt -q '.[] | "\(.createdAt) \(.headSha)"'
-```
+The version tag is rebuilt in place whenever the image changes, so every service declares
+`pull_policy: always`: each `up` fetches the current build, and a cached older one never runs
+under a newer compose file. Two consequences:
 
-A branch name, a `v<version>` tag or a commit that published nothing fails at pull time. That is
-deliberate: `v<version>` tags are written once and never move, while the image they name is
-rebuilt, so a tag pin would pair an old compose file with a newer image.
+- **Wait for the release.** A merge here is visible to stores at once, while its image takes a
+  few minutes to publish. Running `up` in between pairs the new compose file with the previous
+  build. Let the release finish first (`gh run watch` on `release.yml`).
+- **Rolling back a build** means pinning an earlier one by hand: every build is also published
+  as `<version>-<sha>`, so override `image:` on the affected service in the store until `main`
+  is fixed.
 
-Compose fetches the file on first use and caches it by commit, so later commands work offline.
-Verified with Docker Compose v5.1.3; check `docker compose version` on the host.
+Compose resolves `#main` on every command, so every `docker compose` command — `ps` and `logs`
+included — needs GitHub to be reachable (a commit-SHA ref is cached instead). Verified with
+Docker Compose v5.1.3; check `docker compose version` on the host.
 
 **What stays in the store** goes in `compose.override.yaml`, which Compose merges over the
 included services. Environment entries are added to the base's; lists such as `ports` are
@@ -97,7 +100,6 @@ ingress network. `docker compose config` shows the merged result before anything
 
 | Variable | Default | |
 |---|---|---|
-| `CONTEXTURE_IMAGES_REF` | required | Commit SHA that pins this file and the image |
 | `API_SERVER_KEY` | required | Gateway API key |
 | `HERMES_WEBUI_ALLOWED_ORIGINS` | required | Comma-separated public origins, with scheme |
 | `HERMES_WEBUI_PASSWORD` | blank | Optional WebUI password |
@@ -401,9 +403,11 @@ The tag is an output, not an input. It has to be: a tag pushed by a workflow usi
 `GITHUB_TOKEN` does not trigger other workflows, so tagging could never have been what causes a
 publish. `workflow_dispatch` remains available to rebuild a version by hand.
 
-Publishing is safe to automate because a published tag is **inert** — consumers pin an explicit
-tag, and nothing reads `:latest`. A new image sits unused until someone bumps their own pin,
-which is where the real judgement belongs (does this ctxr match my store's `schema_version`?).
+Publishing is automated, and for stores that include the shared compose file from `main` it is
+also the rollout: merging a ctxr bump changes the version their next `up` pulls. The judgement
+(does this ctxr match each store's `schema_version`?) therefore belongs at the merge, not later.
+A store on a newer schema-raising release is refused by `ctxr` until the pull request
+`ctxr-update-store` opens on it is merged. Nothing reads `:latest`.
 
 ## Upgrading the tools
 

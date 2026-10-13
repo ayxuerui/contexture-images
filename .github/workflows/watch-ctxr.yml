@@ -62,7 +62,7 @@ jobs:
         if: steps.compare.outputs.changed == 'true'
         run: |
           printf '%s\n' "${{ steps.compare.outputs.latest }}" > CTXR_VERSION
-          sed -i -E 's#(contexture-hermes:)[^-[:space:]]+(-\$\{CONTEXTURE_IMAGES_REF)#\1${{ steps.compare.outputs.latest }}\2#' \
+          sed -i -E 's#^(x-image: &image ghcr\.io/ayxuerui/contexture-hermes:)[^[:space:]]+$#\1${{ steps.compare.outputs.latest }}#' \
             harnesses/hermes/compose.yaml
 
       - name: Open a bump PR
@@ -85,8 +85,9 @@ jobs:
             There is no separate tagging step to remember; the tag is written afterwards, as
             a record of what shipped rather than as the thing that causes it.
 
-            **Before merging, check the consuming stores.** Since ctxr 0.10.0 the schema gate is
-            both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
-            `contexture.yaml` `schema_version` is refused just as an older one is. Confirm each
-            store is at a `schema_version` this release supports, and read the release notes for
-            a one-time fixup, before rolling the tag out.
+            **Merging this rolls it out.** Stores that include `harnesses/hermes/compose.yaml`
+            from `main` pull the new version on their next `up`. Since ctxr 0.10.0 the schema gate
+            is both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
+            `contexture.yaml` `schema_version` is refused until the migration pull request
+            `ctxr-update-store` opens on that store is merged. Read the release notes for a
+            one-time fixup before merging.
