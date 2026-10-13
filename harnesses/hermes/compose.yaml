@@ -1,29 +1,27 @@
 # Shared deployment for a Contexture store on the contexture-hermes image.
 #
-# A store does not copy this file. It INCLUDES it, remotely, pinned to one commit:
+# A store does not copy this file. It INCLUDES it, remotely, from main:
 #
 #   name: my-store
 #   include:
-#     - path: https://github.com/ayxuerui/contexture-images.git#${CONTEXTURE_IMAGES_REF}:harnesses/hermes/compose.yaml
+#     - https://github.com/ayxuerui/contexture-images.git#main:harnesses/hermes/compose.yaml
 #
 # and keeps only what is genuinely its own in a compose.override.yaml beside it: published
 # ports, ingress networks, container names, existing volume names, chat integrations. See the
 # README section "Deploying a store with the shared compose file".
 #
-# ONE pin. CONTEXTURE_IMAGES_REF is a full commit SHA of this repo, and it selects both this
-# file AND the image the release workflow built from that same commit (tagged
-# <ctxr version>-<sha>). The compose and the image therefore cannot drift apart, which a copied
-# compose file plus a separately pinned image tag did -- repeatedly. A ref with no published
-# image (a branch name, or a commit whose merge did not trigger a release) fails at pull time
-# rather than running a mismatched pair.
-#
-# The version below is asserted equal to CTXR_VERSION by CI and bumped with it by
-# watch-ctxr.yml; never edit one without the other.
-#
+# No pin on the store side. This file names the image by its ctxr version, which is asserted
+# equal to CTXR_VERSION by CI and bumped with it by watch-ctxr.yml -- never edit one without the
+# other. The version tag is rebuilt in place whenever the image changes, so every service pulls
+# on every `up` (pull_policy: always): a cached older build never runs under a newer compose
+# file. The one gap is a release still building -- after merging a change here, let the release
+# finish before running `up` against it. A store brings its schema up to the new ctxr through
+# the pull request ctxr-update-store opens at container start.
+
 # Portable by construction: no published ports, no host paths, no container names, no
 # deployment-specific defaults. Everything here is identical for every store.
 
-x-image: &image ghcr.io/ayxuerui/contexture-hermes:0.22.0-${CONTEXTURE_IMAGES_REF:?CONTEXTURE_IMAGES_REF must be a full contexture-images commit SHA}
+x-image: &image ghcr.io/ayxuerui/contexture-hermes:0.22.0
 
 # The one-shots and schedulers override the entrypoint, so s6 never starts and with-contenv
 # never runs: HOME and HERMES_HOME are set explicitly rather than inherited.
@@ -62,6 +60,7 @@ services:
   #   docker compose --profile init run --rm workspace-init
   workspace-init:
     image: *image
+    pull_policy: always
     profiles: ["init"]
     restart: "no"
     entrypoint: ["ctxr-provision"]
@@ -84,6 +83,7 @@ services:
   # supervisor, sharing one toolchain. Never override this service's entrypoint.
   agents:
     image: *image
+    pull_policy: always
     restart: unless-stopped
     command: ["gateway", "run"]
     stop_grace_period: 30s
@@ -154,6 +154,7 @@ services:
   # Bypasses s6: `ctxr serve` is one foreground process.
   serve:
     image: *image
+    pull_policy: always
     restart: unless-stopped
     entrypoint: ["ctxr"]
     command: ["serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "/store"]
@@ -187,6 +188,7 @@ services:
   # already backs it up.
   harness-backup:
     image: *image
+    pull_policy: always
     profiles: ["backup"]
     restart: "no"
     entrypoint: ["harness-backup"]
@@ -198,6 +200,7 @@ services:
 
   harness-config-push:
     image: *image
+    pull_policy: always
     profiles: ["backup"]
     restart: "no"
     entrypoint: ["harness-config-push"]
@@ -214,6 +217,7 @@ services:
   # and the channel that reports them missing down together.
   harness-backup-cron:
     image: *image
+    pull_policy: always
     restart: unless-stopped
     entrypoint: ["harness-schedule"]
     command: ["harness-backup"]
@@ -238,6 +242,7 @@ services:
   # never abort the snapshot.
   harness-config-cron:
     image: *image
+    pull_policy: always
     restart: unless-stopped
     entrypoint: ["harness-schedule"]
     command: ["harness-config-push"]
