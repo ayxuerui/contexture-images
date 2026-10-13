@@ -18,6 +18,12 @@ DEFAULT_ARGS = {
 }
 
 
+def home():
+    # Same default as the store-update service: the agent's tool-call home under HERMES_HOME.
+    default = os.environ.get('HERMES_HOME', '/opt/data') + '/home'
+    return os.environ.get('HARNESS_REMOTE_HOME', default)
+
+
 def enabled():
     names = [name.strip() for name in os.environ.get('HARNESS_REMOTE_AGENTS', '').split(',')
              if name.strip()]
@@ -47,8 +53,8 @@ def configuration():
         root = os.environ.get('CONTEXTURE_STORE_ROOT', '')
         if not root or not Path(root).is_absolute() or not Path(root).is_dir():
             raise ValueError('CONTEXTURE_STORE_ROOT must be an existing absolute directory')
-        home = os.environ.get('HARNESS_REMOTE_HOME', '/opt/data/home')
-        if not Path(home).is_absolute() or not Path(home).is_dir():
+        directory = Path(home())
+        if not directory.is_absolute() or not directory.is_dir():
             raise ValueError('HARNESS_REMOTE_HOME must be an existing absolute directory')
         for name in names:
             command(name)
@@ -145,7 +151,7 @@ def main():
         return 0 if name in names else 125
     if name not in names:
         return 0
-    os.environ['HOME'] = os.environ.get('HARNESS_REMOTE_HOME', '/opt/data/home')
+    os.environ['HOME'] = home()
     os.chdir(os.environ['CONTEXTURE_STORE_ROOT'])
     return worker(name, command(name))
 

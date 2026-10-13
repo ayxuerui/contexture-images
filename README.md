@@ -50,7 +50,8 @@ services:
 none. Unknown names fail validation. Enabled agents require an existing absolute
 `CONTEXTURE_STORE_ROOT` and home directory. Remote children run as the image's `hermes`
 user, after the normal UID/GID setup, with the selected store as their working directory.
-`HARNESS_REMOTE_HOME` defaults to `/opt/data/home`; it supplies CLI credentials and
+`HARNESS_REMOTE_HOME` defaults to `$HERMES_HOME/home` (`/opt/data/home`), the same home
+the store-update service and Hermes tool calls use; it supplies CLI credentials and
 session history, while Hermes keeps its separate `HERMES_HOME`. Credential files remain
 in each harness's native directories; they are never baked into the image.
 

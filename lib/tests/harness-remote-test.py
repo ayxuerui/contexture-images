@@ -57,6 +57,14 @@ class Configuration(unittest.TestCase):
         self.assertIn('--permission-mode', remote.DEFAULT_ARGS['claude'])
         self.assertIn('sandbox_mode="read-only"', remote.DEFAULT_ARGS['codex'])
 
+    def test_home_follows_hermes_home(self):
+        del os.environ['HARNESS_REMOTE_HOME']
+        self.assertEqual(remote.home(), '/opt/data/home')
+        os.environ['HERMES_HOME'] = '/srv/hermes'
+        self.assertEqual(remote.home(), '/srv/hermes/home')
+        os.environ['HARNESS_REMOTE_HOME'] = self.temp.name
+        self.assertEqual(remote.home(), self.temp.name)
+
     def test_enabled_selection(self):
         os.environ['HARNESS_REMOTE_AGENTS'] = ' claude, codex,agy,claude '
         self.assertEqual(remote.configuration(), {'claude', 'codex', 'agy'})
