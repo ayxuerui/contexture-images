@@ -11,7 +11,11 @@ import threading
 AGENTS = ('claude', 'codex', 'agy')
 DEFAULT_ARGS = {
     'claude': ['--spawn', 'same-dir', '--permission-mode', 'plan'],
-    'codex': ['--no-daemon', '-c', 'sandbox_mode="read-only"',
+    # Codex's own sandbox cannot run in this container: bubblewrap needs an unprivileged user
+    # namespace, which Docker's default seccomp profile refuses (rootless or not). Under
+    # read-only every command, `echo` included, fails before it starts, so the container is
+    # the boundary instead -- as it already is for Hermes, Claude and agy beside it.
+    'codex': ['--no-daemon', '-c', 'sandbox_mode="danger-full-access"',
               '-c', 'approval_policy="on-request"'],
     # agy 1.3.3's internal OS-service entrypoint, not a public CLI contract.
     'agy': ['serve'],
