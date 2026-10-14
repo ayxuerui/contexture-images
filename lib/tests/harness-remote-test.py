@@ -55,7 +55,9 @@ class Configuration(unittest.TestCase):
         os.environ['HARNESS_REMOTE_CLAUDE_ARGS'] = '["--name", "literal $(touch bad)"]'
         self.assertEqual(remote.command('claude')[-1], 'literal $(touch bad)')
         self.assertIn('--permission-mode', remote.DEFAULT_ARGS['claude'])
-        self.assertIn('sandbox_mode="read-only"', remote.DEFAULT_ARGS['codex'])
+        # The in-container sandbox cannot start; read-only would fail every command.
+        self.assertIn('sandbox_mode="danger-full-access"', remote.DEFAULT_ARGS['codex'])
+        self.assertIn('approval_policy="on-request"', remote.DEFAULT_ARGS['codex'])
 
     def test_blank_args_use_defaults(self):
         os.environ['HARNESS_REMOTE_CODEX_ARGS'] = ''

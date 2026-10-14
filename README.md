@@ -154,10 +154,24 @@ JSON array of strings, passed directly without shell evaluation. Defaults are:
 | Agent | Default arguments |
 |---|---|
 | Claude | `--spawn same-dir --permission-mode plan` |
-| Codex | `--no-daemon -c sandbox_mode="read-only" -c approval_policy="on-request"` |
+| Codex | `--no-daemon -c sandbox_mode="danger-full-access" -c approval_policy="on-request"` |
 | agy | `serve` |
 
 Codex must remain in foreground mode; daemon-management subcommands are rejected.
+
+**Codex runs without its own sandbox, by default and on purpose.** Codex runs every action —
+reading a file, `git`, an edit — as a shell command wrapped in bubblewrap, and bubblewrap needs
+to create an unprivileged user namespace. Docker's default seccomp profile refuses that (even
+`unshare --user` fails in the container), so under `sandbox_mode="read-only"` every command,
+`echo` included, fails before it starts with `bwrap: No permissions to create a new namespace`.
+Installing a system `bubblewrap` does not help; only the permission is missing. The container is
+the boundary instead, exactly as for Hermes, Claude and agy beside it: no Docker socket, only the
+store and data volumes, the unprivileged runtime uid, and store changes reaching `main` only
+through reviewed pull requests. What that gives up is a second layer inside the container —
+Codex can read and write what the runtime user can, including the shared home's logins, and has
+network access. Relaxing the container's seccomp profile to let the inner sandbox run would weaken
+isolation for every process in the container, and is not done here. The `bubblewrap on PATH`
+warning in Codex's log is expected and harmless.
 agy's `serve` is the internal foreground OS-service entrypoint, verified to dispatch
 in 1.3.3. Its public `start` command installs an OS service and needs systemd. Treat
 this integration as version-sensitive: verify dispatch and actual authenticated
