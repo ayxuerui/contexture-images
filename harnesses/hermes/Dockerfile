@@ -62,7 +62,7 @@ ARG AGENT_BROWSER_VERSION=0.39.0
 # Both watched by watch-agent-clis.yml, like the two above. CLAUDE_VERSION is an exact pin;
 # AGY_VERSION is a cache key and an expectation, since agy's installer cannot be pinned. See
 # install-agent-clis.sh.
-ARG CLAUDE_VERSION=2.1.287
+ARG CLAUDE_VERSION=2.1.292
 ARG AGY_VERSION=1.3.3
 ENV CLAUDE_TOOLCHAIN_HOME=/opt/toolchain
 COPY lib/install-agent-clis.sh /tmp/install-agent-clis.sh
