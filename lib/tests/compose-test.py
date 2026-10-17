@@ -55,6 +55,37 @@ class Base(unittest.TestCase):
         self.assertIsNone(agents.get('entrypoint'))  # s6 must stay PID 1
 
 
+    def test_approval_credential_is_off_by_default_and_never_reaches_agents(self):
+        model = self.render('--profile', 'approvals')
+        for name in ('serve', 'land-cron'):
+            with self.subTest(service=name):
+                env = model['services'][name]['environment']
+                # Blank ID and blank key path together: ctxr refuses a key without an ID.
+                self.assertEqual(env['CONTEXTURE_GITHUB_APP_ID'], '')
+                self.assertEqual(env['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '')
+        agents = model['services']['agents']
+        self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
+        self.assertNotIn('secrets', agents)
+        self.assertEqual(model['secrets']['github-app-key']['file'], '/dev/null')
+
+    def test_approval_credential_when_configured(self):
+        env = {**REQUIRED, 'CONTEXTURE_GITHUB_APP_ID': '5354981',
+               'CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH': str(BASE)}
+        model = self.render('--profile', 'approvals', env=env)
+        for name in ('serve', 'land-cron'):
+            with self.subTest(service=name):
+                service = model['services'][name]
+                self.assertEqual(service['environment']['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '/run/secrets/github-app-key')
+                self.assertEqual([s['target'] for s in service['secrets']], ['/run/secrets/github-app-key'])
+        self.assertNotIn('secrets', model['services']['agents'])
+
+    def test_land_runner_is_opt_in(self):
+        self.assertNotIn('land-cron', self.render()['services'])
+        runner = self.render('--profile', 'approvals')['services']['land-cron']
+        self.assertEqual(runner['command'], ['ctxr', 'land', '--pending', '--root', '/store'])
+        self.assertEqual(runner['entrypoint'], ['harness-schedule'])
+
+
 class Store(unittest.TestCase):
     """A store includes the base and overrides only what is its own."""
 
