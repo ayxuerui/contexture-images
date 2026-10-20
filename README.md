@@ -128,9 +128,18 @@ ctxr's change approval lets people without a GitHub account approve a session's 
 
 - **The recording identity as a GitHub App.** Set `CONTEXTURE_GITHUB_APP_ID`, and
   `CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH` to the App's `.pem` on the host. Compose mounts it as the
-  `github-app-key` secret at `/run/secrets/github-app-key` in `serve` and `land-cron` only. Outside
-  swarm, Compose bind-mounts the file as it is and ignores `uid`/`mode`, so the runtime uid must be
-  able to read it: `sudo install -o 10000 -g 10000 -m 0400 app.pem /etc/contexture/app.pem`.
+  `github-app-key` secret at `/run/secrets/github-app-key` in `serve` and `land-cron` only. The
+  key can stay where it is; nothing needs to copy it. Outside swarm, Compose bind-mounts the file
+  as it is and ignores `uid`/`mode`, so the runtime uid (`PUID`, 10000) must be able to read it,
+  and what that takes depends on the Docker daemon:
+  - **Rootless Docker** (`docker info` lists `name=rootless`). Container uids are remapped: uid
+    10000 inside is a subordinate uid on the host, not your user and not host uid 10000. Leave the
+    file owned by you, and make it world-readable inside a directory only you can enter:
+    `chmod 700 ~/.credentials && chmod 644 ~/.credentials/app.pem`. The directory keeps other host
+    users out, and only the two containers that mount the file can read it. Mode `600`, or a
+    `chown` to 10000, leaves it unreadable in the container.
+  - **Rootful Docker.** Container uid 10000 is host uid 10000, so give that uid the file:
+    `sudo install -D -o 10000 -g 10000 -m 0400 app.pem /etc/contexture/app.pem`.
 - **The runner.** `COMPOSE_PROFILES=approvals` starts `land-cron`, which runs
   `ctxr land --pending` every `CTXR_LAND_INTERVAL` seconds. A landing that stops (a conflict with
   no resolver, a refused merge) exits non-zero, and `HARNESS_NOTIFY_TARGET` hears about it.

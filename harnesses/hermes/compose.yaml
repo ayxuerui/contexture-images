@@ -306,7 +306,9 @@ services:
 
 secrets:
   # A file the runtime uid can read (PUID, 10000 by default): Compose outside swarm bind-mounts it
-  # as-is and ignores uid/mode. /dev/null when unset, so a store without an App still renders.
+  # as-is and ignores uid/mode. Under rootless Docker that uid is remapped on the host, so the file
+  # stays yours at 644 inside a 700 directory (README). /dev/null when unset, so a store without an
+  # App still renders.
   github-app-key:
     file: ${CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH:-/dev/null}
 
