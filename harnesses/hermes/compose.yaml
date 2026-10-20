@@ -188,10 +188,11 @@ services:
           cpus: "0.25"
 
   # --- Harness home backup ------------------------------------------------------------------
-  # Two one-shots, invoked deliberately, and two schedulers that run them on a cadence. They
-  # cover different failures: config-push commits $HERMES_HOME's CONFIG to a private repo so it
-  # can be diffed, with no credentials; harness-backup snapshots the whole home to restic,
-  # credentials included and encrypted, and is the actual recovery path.
+  # Two different jobs, not one backup run twice. harness-backup snapshots the whole home to
+  # restic, credentials included and encrypted: the recovery path. harness-config-push commits
+  # only $HERMES_HOME's CONFIG to a private repo, with no credentials: a history to diff, which
+  # cannot restore a working harness on its own. Each has a one-shot, invoked deliberately, and
+  # a scheduler that runs it on its own cadence.
   #
   #   docker compose --profile backup run --rm harness-backup
   #   docker compose --profile backup run --rm harness-config-push
@@ -251,8 +252,11 @@ services:
           memory: 1G
           cpus: "1.0"
 
-  # Separate from the backup scheduler: the cadences differ, and a config-push failure must
-  # never abort the snapshot.
+  # Its own scheduler, not a step in harness-backup-cron. One harness-schedule runs one command
+  # on one interval, and these want different ones: every 6h here would rebuild and upload the
+  # multi-gigabyte snapshot four times a day, daily there would thin the config history to one
+  # point a day. Apart, a config-push failure can never abort the snapshot, and each failure
+  # notification names the job that failed.
   harness-config-cron:
     image: *image
     pull_policy: always

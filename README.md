@@ -249,6 +249,13 @@ Restoring from the git repo alone gives you a harness that cannot authenticate t
 A restic repository cannot tell you what changed in `SOUL.md` last week. Run both, or pick the
 one whose failure you can live with.
 
+The shared compose file schedules each in its own container, `harness-backup-cron` (daily) and
+`harness-config-cron` (every 6h). That is two jobs, not one backup done twice, and they stay
+apart on purpose: a scheduler runs one command on one interval, so a single container would
+either rebuild the multi-gigabyte snapshot four times a day or thin the config history to one
+point a day. Apart, a failed config push never costs the snapshot, and each failure notice
+names the job that failed.
+
 Like `ctxr-provision`, these ship but never run. `harness-schedule` is the third command, and
 what a deployment points a long-lived service at:
 
