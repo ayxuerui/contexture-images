@@ -185,7 +185,10 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: "0.25"
+          # One core: the approval page computes a change's knowledge delta and diff, which took
+          # ~6 s at 0.25. A request is one Node thread plus sequential git and gh, so more than one
+          # core does not make a page faster -- it would only let serve compete with the agents.
+          cpus: "1.0"
 
   # --- Harness home backup ------------------------------------------------------------------
   # Two different jobs, not one backup run twice. harness-backup snapshots the whole home to
