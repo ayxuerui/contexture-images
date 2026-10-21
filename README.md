@@ -8,7 +8,7 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq` |
+| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `cb` (Circleback), `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq` |
 
 ## Using it
 
@@ -230,6 +230,13 @@ Hermes healthcheck; it checks **process health**, not authentication or relay re
 A live disconnected process can pass. Complete CLI login and verify each provider's
 remote client separately. agy CLI login is distinct from editor login and may need
 Linux keyring support; no authentication state is provisioned by this capability.
+
+`cb`, Circleback's CLI, ships logged out. Log in once per store with
+`docker exec -it -u hermes <container> cb auth login --api-key`. As `hermes` it saves the key
+under `/opt/data/.config/circleback`, in the persistent home, so the key survives an image pull. A
+bare `docker exec` runs as root, whose home is not persistent. Setting
+`CIRCLEBACK_API_KEY` in the store's environment also works and overrides the saved key. Use a
+read-and-write key if an agent should tag meetings.
 
 All harnesses share a network namespace. Keep remote transports outbound/local and
 expose only the deployment's intended authenticated Hermes endpoints. Keep backup

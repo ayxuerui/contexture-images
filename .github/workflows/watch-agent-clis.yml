@@ -6,7 +6,7 @@
 # "pull the new image and recreate" -- a pin that does not move means a tool that never upgrades.
 #
 # Two kinds of source:
-#   npm      codex, agent-browser -- `npm view <package> version`.
+#   npm      codex, agent-browser, circleback -- `npm view <package> version`.
 #   release  claude, agy -- neither is on npm, so each is read from the endpoint its own
 #            installer reads. claude's `stable` channel file is a bare version; agy's platform
 #            manifest is JSON with a `version` key (linux_amd64 is the one CI builds, and both
@@ -51,6 +51,9 @@ jobs:
           - name: agent-browser
             package: agent-browser
             arg: AGENT_BROWSER_VERSION
+          - name: circleback
+            package: '@circleback/cli'
+            arg: CIRCLEBACK_CLI_VERSION
           - name: claude
             source_url: https://downloads.claude.ai/claude-code-releases/stable
             arg: CLAUDE_VERSION
@@ -126,8 +129,8 @@ jobs:
             pins **${{ steps.compare.outputs.pinned }}** (`${{ matrix.arg }}`).
 
             CI builds this branch, and `install-agent-clis.sh`'s own smoke test confirms the new
-            version installs and runs in the image -- an exact match for codex, agent-browser and
-            claude; for agy, whose installer cannot be pinned, a warning in the build log if what
+            version installs and runs in the image -- an exact match for codex, agent-browser, circleback
+            and claude; for agy, whose installer cannot be pinned, a warning in the build log if what
             landed differs.
 
             **Merging is what publishes** -- release.yml triggers on a push to main touching
