@@ -112,8 +112,7 @@ ingress network. `docker compose config` shows the merged result before anything
 | `HARNESS_BACKUP_*`, `RESTIC_PACK_SIZE`, `RCLONE_CONFIG_GDRIVE_*` | see the file | Backups; a blank destination is off |
 | `HARNESS_CONFIG_REPO`, `HARNESS_CONFIG_DRY_RUN` | blank | Config push |
 | `HARNESS_BACKUP_INTERVAL`, `HARNESS_CONFIG_INTERVAL`, `HARNESS_NOTIFY_TARGET` | daily, 6h, blank | Schedulers |
-| `CONTEXTURE_GITHUB_APP_ID`, `CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH` | blank | The store's recording identity as a GitHub App; `serve` and `land-cron` only. See below |
-| `CTXR_LAND_INTERVAL` | `300` | `land-cron` (profile `approvals`) |
+| `CONTEXTURE_GITHUB_APP_ID`, `CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH` | blank | The store's recording identity as a GitHub App; `serve` only. See below |
 
 CI checks that the file's image version equals `CTXR_VERSION` (the bump bot updates both), that
 it renders with only the required variables, that it stays portable, and that a store's include
@@ -122,13 +121,14 @@ and override merge as described here.
 ## Approving changes from the review page
 
 ctxr's change approval lets people without a GitHub account approve a session's pull request on
-`serve`'s `/approve/` page, and lands what they approve. It needs a ctxr release with
-`ctxr land` and a store whose `contexture.yaml` declares `change_approval` (see ctxr's README,
-"Approving changes from a page"). This file carries the deployment half:
+`serve`'s `/approve/` page, and `serve` itself lands what they approve -- no scheduler. It needs a
+ctxr release in which `serve` lands, and a store whose `contexture.yaml` declares
+`change_approval` (see ctxr's README, "Approving changes from a page"). This file carries the
+deployment half:
 
 - **The recording identity as a GitHub App.** Set `CONTEXTURE_GITHUB_APP_ID`, and
   `CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH` to the App's `.pem` on the host. Compose mounts it as the
-  `github-app-key` secret at `/run/secrets/github-app-key` in `serve` and `land-cron` only. The
+  `github-app-key` secret at `/run/secrets/github-app-key` in `serve` only. The
   key can stay where it is; nothing needs to copy it. Outside swarm, Compose bind-mounts the file
   as it is and ignores `uid`/`mode`, so the runtime uid (`PUID`, 10000) must be able to read it,
   and what that takes depends on the Docker daemon:
@@ -136,19 +136,22 @@ ctxr's change approval lets people without a GitHub account approve a session's 
     10000 inside is a subordinate uid on the host, not your user and not host uid 10000. Leave the
     file owned by you, and make it world-readable inside a directory only you can enter:
     `chmod 700 ~/.credentials && chmod 644 ~/.credentials/app.pem`. The directory keeps other host
-    users out, and only the two containers that mount the file can read it. Mode `600`, or a
+    users out, and only the container that mounts the file can read it. Mode `600`, or a
     `chown` to 10000, leaves it unreadable in the container.
   - **Rootful Docker.** Container uid 10000 is host uid 10000, so give that uid the file:
     `sudo install -D -o 10000 -g 10000 -m 0400 app.pem /etc/contexture/app.pem`.
-- **The runner.** `COMPOSE_PROFILES=approvals` starts `land-cron`, which runs
-  `ctxr land --pending` every `CTXR_LAND_INTERVAL` seconds. A landing that stops (a conflict with
-  no resolver, a refused merge) exits non-zero, and `HARNESS_NOTIFY_TARGET` hears about it.
-- **Never the agents.** The key is not given to `agents`, for the same reason `GH_TOKEN` is not:
-  every shell command an agent runs can read that container's environment and files. One App can
-  serve every store one operator runs, so a key an agent could read would reach all of them.
+- **Landing.** `serve` mounts the store writable and runs `ctxr land --pending` as a child process
+  after each Approve and every five minutes. Its log carries each run, prefixed `land:`; a change
+  that cannot land shows as blocked on its approval page. `change_approval.land: manual` in the
+  store's config turns this off.
+- **Never the agents, so `serve` keeps its own container.** The key is not given to `agents`, for
+  the same reason `GH_TOKEN` is not: every shell command an agent runs can read that container's
+  environment and files. An agent that could use the recording identity could approve its own
+  change in a decider's name, and one App can serve every store one operator runs.
 
-With no App ID set, both services see blank variables and behave exactly as before, and
-`land-cron` does not run unless its profile is selected.
+With no App ID set, `serve` sees blank variables and behaves exactly as before. A store that set
+`COMPOSE_PROFILES=approvals` for the old `land-cron` can drop it; the profile no longer selects
+anything.
 
 ## Running several harnesses in one container
 
