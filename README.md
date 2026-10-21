@@ -232,9 +232,10 @@ remote client separately. agy CLI login is distinct from editor login and may ne
 Linux keyring support; no authentication state is provisioned by this capability.
 
 `cb`, Circleback's CLI, ships logged out. Log in once per store with
-`docker exec -it -u hermes <container> cb auth login --api-key`. As `hermes` it saves the key
-under `/opt/data/.config/circleback`, in the persistent home, so the key survives an image pull. A
-bare `docker exec` runs as root, whose home is not persistent. Setting
+`docker exec -it -u hermes -e HOME=/opt/data/home <container> cb auth login --api-key`. That is
+the HOME the agent's tool calls use, so the key lands in `/opt/data/home/.config/circleback` and
+survives an image pull. A bare `docker exec` runs as root, and `-u hermes` alone gets
+`HOME=/opt/data`, where the agent never looks. Setting
 `CIRCLEBACK_API_KEY` in the store's environment also works and overrides the saved key. Use a
 read-and-write key if an agent should tag meetings.
 
