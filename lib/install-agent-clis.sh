@@ -14,6 +14,7 @@
 # Inputs, all required, fed from Dockerfile ARGs:
 #   CODEX_VERSION          @openai/codex
 #   AGENT_BROWSER_VERSION  agent-browser
+#   CIRCLEBACK_CLI_VERSION @circleback/cli (the `cb` command)
 #   CLAUDE_VERSION         exact claude build, passed to its installer
 #   AGY_VERSION            the agy release this build expects (see below: recorded, not enforced)
 #   TOOLCHAIN_HOME         throwaway HOME for the curl|bash installers (see below)
@@ -23,6 +24,7 @@ fail() { echo "install-agent-clis: $*" >&2; exit 1; }
 
 : "${CODEX_VERSION:?CODEX_VERSION is required}"
 : "${AGENT_BROWSER_VERSION:?AGENT_BROWSER_VERSION is required}"
+: "${CIRCLEBACK_CLI_VERSION:?CIRCLEBACK_CLI_VERSION is required}"
 : "${CLAUDE_VERSION:?CLAUDE_VERSION is required}"
 : "${AGY_VERSION:?AGY_VERSION is required}"
 : "${TOOLCHAIN_HOME:?TOOLCHAIN_HOME is required}"
@@ -32,13 +34,17 @@ command -v npm >/dev/null 2>&1 || fail "needs Node/npm on the base image"
 # --- npm-distributed --------------------------------------------------------------------
 # Pinned, and smoke-tested in the same layer, so a moved or broken package fails the BUILD
 # rather than a cron job at 03:00.
-echo "install-agent-clis: installing codex ${CODEX_VERSION}, agent-browser ${AGENT_BROWSER_VERSION}"
+echo "install-agent-clis: installing codex ${CODEX_VERSION}, agent-browser ${AGENT_BROWSER_VERSION}, cb ${CIRCLEBACK_CLI_VERSION}"
 npm install -g \
   "@openai/codex@${CODEX_VERSION}" \
-  "agent-browser@${AGENT_BROWSER_VERSION}"
+  "agent-browser@${AGENT_BROWSER_VERSION}" \
+  "@circleback/cli@${CIRCLEBACK_CLI_VERSION}"
 npm cache clean --force
 codex --version
 command -v agent-browser >/dev/null 2>&1 || fail "agent-browser did not land on PATH"
+cb_version="$(cb --version)"
+[ "${cb_version}" = "${CIRCLEBACK_CLI_VERSION}" ] \
+  || fail "cb reports '${cb_version}' but CIRCLEBACK_CLI_VERSION is '${CIRCLEBACK_CLI_VERSION}'"
 
 # --- curl|bash installers ---------------------------------------------------------------
 # Neither claude nor agy ships on npm, so .github/workflows/watch-agent-clis.yml reads their own
@@ -106,4 +112,4 @@ if [ "${agy_version}" != "${AGY_VERSION}" ]; then
   echo "install-agent-clis: WARNING: agy cannot be pinned; the watcher will open a bump PR." >&2
 fi
 
-echo "install-agent-clis: ok (codex ${CODEX_VERSION}, agent-browser ${AGENT_BROWSER_VERSION}, claude ${claude_version}, agy ${agy_version})"
+echo "install-agent-clis: ok (codex ${CODEX_VERSION}, agent-browser ${AGENT_BROWSER_VERSION}, cb ${cb_version}, claude ${claude_version}, agy ${agy_version})"
