@@ -51,8 +51,8 @@ x-backup-env: &backup-env
   RCLONE_CONFIG_GDRIVE_TOKEN: ${RCLONE_CONFIG_GDRIVE_TOKEN:-}
 
 # The store's recording identity, when it is a GitHub App (ctxr's change approval). Given ONLY to
-# `serve` and `land-cron`, never to `agents`: agents run shell commands, and one App's key can act on
-# every store the App is installed on. Blank App ID = off, and then the key path is blank too --
+# `serve`, never to `agents`: agents run shell commands, and one App's key can act on every store
+# the App is installed on -- an agent that could use it could approve its own change. Blank App ID = off, and then the key path is blank too --
 # `:+` sets it only when the ID is set, because ctxr refuses a key without an ID.
 x-approval-env: &approval-env
   CONTEXTURE_GITHUB_APP_ID: ${CONTEXTURE_GITHUB_APP_ID:-}
@@ -158,8 +158,10 @@ services:
           memory: ${AGENTS_MEMORY_LIMIT:-6G}
           cpus: "${AGENTS_CPUS:-3.0}"
 
-  # Read-only browsing of the store. Same image, so `ctxr` here is byte-identical to the agent's.
-  # Bypasses s6: `ctxr serve` is one foreground process.
+  # Browsing, the approval page, and landing what was approved: `ctxr serve` runs
+  # `ctxr land --pending` itself (after an Approve, and on a five-minute sweep) when the store
+  # declares change_approval. Same image, so `ctxr` here is byte-identical to the agent's. Its own
+  # container, because it holds the App key and agents must not. Bypasses s6: one foreground process.
   serve:
     image: *image
     pull_policy: always
@@ -167,14 +169,16 @@ services:
     entrypoint: ["ctxr"]
     command: ["serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "/store"]
     user: "${PUID:-10000}:${PGID:-10000}"
-    # Records approval-page decisions as the App; unused unless the store declares change_approval.
+    # Records approval-page decisions and lands as the App; unused unless the store declares
+    # change_approval. No HOME: on a host with no git identity, landing commits as the recording login.
     environment:
       <<: *approval-env
     secrets:
       - github-app-key
     volumes:
-      # `ctxr serve` never writes; read-only is defence in depth.
-      - store:/store:ro
+      # Writable for landing only (rebase, fast-forward, worktree removal); the page routes write
+      # nothing under the store. Same uid as `agents`, so what landing leaves stays theirs to edit.
+      - store:/store
     healthcheck:
       test: ["CMD-SHELL", "curl -sS -o /dev/null http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"]
       interval: 30s
@@ -184,7 +188,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          # serve (~95 MB) plus a landing run, a second Node process of about the same size.
+          memory: 512M
           # One core: the approval page computes a change's knowledge delta and diff, which took
           # ~6 s at 0.25. A request is one Node thread plus sequential git and gh, so more than one
           # core does not make a page faster -- it would only let serve compete with the agents.
@@ -279,37 +284,6 @@ services:
         limits:
           memory: 512M
           cpus: "1.0"
-
-  # --- Landing approved changes -------------------------------------------------------------
-  # Lands every session pull request approved on serve's approval page: catch up, merge, sync
-  # the canonical clone, reclaim the worktree. Opt-in, because it needs a ctxr with `land` and a
-  # store that declares change_approval:  COMPOSE_PROFILES=approvals
-  # A blocked landing exits non-zero, so HARNESS_NOTIFY_TARGET hears about it.
-  land-cron:
-    image: *image
-    pull_policy: always
-    profiles: ["approvals"]
-    restart: unless-stopped
-    entrypoint: ["harness-schedule"]
-    command: ["ctxr", "land", "--pending", "--root", "/store"]
-    user: "${PUID:-10000}:${PGID:-10000}"
-    environment:
-      # HOME carries the git identity the catch-up rebase commits as.
-      <<: [*harness-home, *approval-env]
-      CONTEXTURE_STORE_ROOT: /store
-      HARNESS_SCHEDULE_INTERVAL: ${CTXR_LAND_INTERVAL:-300}
-      HARNESS_SCHEDULE_NAME: ctxr-land
-      HARNESS_SCHEDULE_NOTIFY: ${HARNESS_NOTIFY_TARGET:-}
-    secrets:
-      - github-app-key
-    volumes:
-      - data:/opt/data
-      - store:/store
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "0.5"
 
 secrets:
   # A file the runtime uid can read (PUID, 10000 by default): Compose outside swarm bind-mounts it

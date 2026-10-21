@@ -56,13 +56,11 @@ class Base(unittest.TestCase):
 
 
     def test_approval_credential_is_off_by_default_and_never_reaches_agents(self):
-        model = self.render('--profile', 'approvals')
-        for name in ('serve', 'land-cron'):
-            with self.subTest(service=name):
-                env = model['services'][name]['environment']
-                # Blank ID and blank key path together: ctxr refuses a key without an ID.
-                self.assertEqual(env['CONTEXTURE_GITHUB_APP_ID'], '')
-                self.assertEqual(env['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '')
+        model = self.render()
+        env = model['services']['serve']['environment']
+        # Blank ID and blank key path together: ctxr refuses a key without an ID.
+        self.assertEqual(env['CONTEXTURE_GITHUB_APP_ID'], '')
+        self.assertEqual(env['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
         self.assertNotIn('secrets', agents)
@@ -71,19 +69,19 @@ class Base(unittest.TestCase):
     def test_approval_credential_when_configured(self):
         env = {**REQUIRED, 'CONTEXTURE_GITHUB_APP_ID': '5354981',
                'CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH': str(BASE)}
-        model = self.render('--profile', 'approvals', env=env)
-        for name in ('serve', 'land-cron'):
-            with self.subTest(service=name):
-                service = model['services'][name]
-                self.assertEqual(service['environment']['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '/run/secrets/github-app-key')
-                self.assertEqual([s['target'] for s in service['secrets']], ['/run/secrets/github-app-key'])
+        model = self.render(env=env)
+        serve = model['services']['serve']
+        self.assertEqual(serve['environment']['CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE'], '/run/secrets/github-app-key')
+        self.assertEqual([s['target'] for s in serve['secrets']], ['/run/secrets/github-app-key'])
         self.assertNotIn('secrets', model['services']['agents'])
 
-    def test_land_runner_is_opt_in(self):
-        self.assertNotIn('land-cron', self.render()['services'])
-        runner = self.render('--profile', 'approvals')['services']['land-cron']
-        self.assertEqual(runner['command'], ['ctxr', 'land', '--pending', '--root', '/store'])
-        self.assertEqual(runner['entrypoint'], ['harness-schedule'])
+    def test_serve_lands_so_there_is_no_separate_runner(self):
+        model = self.render('--profile', 'approvals', '--profile', 'init', '--profile', 'backup')
+        self.assertNotIn('land-cron', model['services'])
+        serve = model['services']['serve']
+        store = [v for v in serve['volumes'] if v['source'] == 'store']
+        self.assertEqual(len(store), 1)
+        self.assertFalse(store[0].get('read_only', False))  # landing writes the store
 
 
 class Store(unittest.TestCase):
