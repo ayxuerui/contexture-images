@@ -58,6 +58,11 @@ jobs:
       - name: Run the store-update regression tests
         run: sh lib/tests/update-store-test.sh
 
+      # Same footing: sh and a temp directory. Guards the copy of a store's ctxr-circleback runner
+      # into Hermes's scripts directory, and its removal when the store stops shipping it.
+      - name: Run the circleback-script install tests
+        run: sh lib/tests/install-circleback-script-test.sh
+
   # The shared compose file stores include remotely. Needs only the runner's Docker Compose:
   # version parity with CTXR_VERSION, portability, and a store's include + override merge.
   compose:

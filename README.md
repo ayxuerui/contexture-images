@@ -539,6 +539,29 @@ doing any of it. It can also be run by hand as the runtime user:
 docker exec -u hermes -e HOME=/opt/data/home <container> ctxr-update-store
 ```
 
+### The Circleback runner
+
+A store that declares a `circleback` block in `contexture.yaml` gets ctxr's `ctxr-circleback` skill. Its runner works
+out which Circleback meetings the store owes and renders their captures for a review. To let a Hermes cron job use
+it, the same `store-update` service runs `ctxr-install-circleback-script` after the store update, whether or not
+`CTXR_UPDATE_STORE_ENABLED` is on:
+
+- It copies the skill's directory to `$HERMES_HOME/scripts/ctxr-circleback/`.
+- It writes `run.sh` beside it. The launcher sets the agent's `HOME`, changes into the store, and runs the copied
+  `sweep.mjs` by absolute path.
+- A store that stops shipping the skill loses the copy.
+
+A weekly job then looks like this:
+
+```sh
+hermes cron create --name "Weekly Circleback capture" --workdir /store \
+  --script ctxr-circleback/run.sh --skill ctxr-circleback '49 15 * * 1' \
+  "Follow the ctxr-circleback skill from step 2, using the runner report above."
+```
+
+`cb` must be signed in under the agent's home (`docker exec -it -u hermes -e HOME=/opt/data/home <container> cb auth
+login --api-key`). Like the store update, the install never fails the boot.
+
 ## Layout
 
 ```
@@ -550,6 +573,7 @@ lib/provision-store.sh                shipped as `ctxr-provision`: one-shot stor
 lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
 lib/schedule.sh                       shipped as `harness-schedule`: run a command on an interval
 lib/update-store.sh                   shipped as `ctxr-update-store`: re-render/migrate the store as a PR
+lib/install-circleback-script.sh      shipped as `ctxr-install-circleback-script`: the Circleback runner into Hermes
 lib/harness-remote.py                 shipped as `harness-remote`: optional remote agents under s6
 lib/tests/                            marker-extracted guard tests; CI runs them before the build
 harnesses/hermes/Dockerfile
@@ -557,7 +581,7 @@ harnesses/hermes/compose.yaml         the shared deployment stores include remot
 harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
 harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
 harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
-harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store once per start (on unless =0)
+harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store (on unless =0), then the Circleback install, once per start
 harnesses/hermes/s6-rc.d/*-remote/     Claude Code, Codex and agy remote control, off unless selected
 ```
 
