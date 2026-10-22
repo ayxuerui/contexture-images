@@ -1,9 +1,10 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Store update at container start: runs `ctxr-update-store` once, as the runtime user, then stays
-# down. See lib/update-store.sh for what it does and why it can never fail the boot.
+# Store update at container start: runs `ctxr-update-store` once, as the runtime user, then
+# `ctxr-install-circleback-script`, then stays down. See lib/update-store.sh and
+# lib/install-circleback-script.sh for what each does and why neither can fail the boot.
 #
-# On by default; CTXR_UPDATE_STORE_ENABLED=0 (or false/no/off) turns it off. Every container in a
+# On by default; CTXR_UPDATE_STORE_ENABLED=0 (or false/no/off) turns the store update off. Every container in a
 # stack runs this image, so every one starts this service -- and the script, not the deployment,
 # decides which container does the work: one with a read-only store or no gh credential steps
 # aside, and a lock on the store's git directory lets exactly one of the rest proceed.
@@ -13,16 +14,25 @@
 # them and the gateway is up while this is still talking to the network. ./finish then exits 125
 # so s6 does not restart it: one run per container start is the contract.
 
-case "${CTXR_UPDATE_STORE_ENABLED:-1}" in
-    0|false|FALSE|False|no|NO|No|off|OFF|Off)
-        exit 0
-        ;;
-esac
-
 # Same HOME the agent's tool calls use, and where ctxr-provision persisted the gh credential.
 # with-contenv repopulates HOME as /root, so it is reset before the privilege drop.
 export HOME="${HERMES_HOME:-/opt/data}/home"
 
 # Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec ctxr-update-store
-exec s6-setuidgid hermes ctxr-update-store
+as_runtime_user() {
+    if [ "$(id -u)" = 0 ]; then s6-setuidgid hermes "$@"; else "$@"; fi
+}
+
+case "${CTXR_UPDATE_STORE_ENABLED:-1}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+        ;;
+    *)
+        as_runtime_user ctxr-update-store
+        ;;
+esac
+
+# After the update, so it copies what the freshly pulled canonical clone ships. Not governed by
+# CTXR_UPDATE_STORE_ENABLED: turning off the store update must not strand a stale runner in
+# Hermes's scripts directory. Inert for a store that does not ship ctxr-circleback.
+as_runtime_user ctxr-install-circleback-script
+exit 0
