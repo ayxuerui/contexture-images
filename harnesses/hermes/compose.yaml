@@ -149,7 +149,11 @@ services:
       test: ["CMD-SHELL", "test -f /store/.contexture-initialized && test -d \"$$CONTEXTURE_STORE_ROOT/.agents/skills\" && curl -sS -o /dev/null http://127.0.0.1:8642/ && curl -sS -o /dev/null http://127.0.0.1:9119/ && curl -sS -o /dev/null http://127.0.0.1:8787/ && harness-remote status"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
+      # A gateway with several profiles takes minutes to bind its API port (pkm's two took ~4 min on
+      # 2026-10-22), and 30 s + 5 retries x 30 s reported every restart unhealthy meanwhile. A check
+      # that passes inside the start period still marks the container healthy at once, so this only
+      # stops early failures from counting; it does not delay a healthy report.
+      start_period: 5m
       retries: 5
     deploy:
       resources:
