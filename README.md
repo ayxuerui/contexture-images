@@ -541,12 +541,12 @@ docker exec -u hermes -e HOME=/opt/data/home <container> ctxr-update-store
 
 ### The Circleback runner
 
-A store that declares a `circleback` block in `contexture.yaml` gets ctxr's `ctxr-circleback` skill. Its runner works
+A store that declares a `circleback` block in `contexture.yaml` gets ctxr's `ctxr-capture-circleback` skill, capture's retrieval step for Circleback. Its runner works
 out which Circleback meetings the store owes and renders their captures for a review. To let a Hermes cron job use
 it, the same `store-update` service runs `ctxr-install-circleback-script` after the store update, whether or not
 `CTXR_UPDATE_STORE_ENABLED` is on:
 
-- It copies the skill's directory to `$HERMES_HOME/scripts/ctxr-circleback/`.
+- It copies the skill's directory to `$HERMES_HOME/scripts/ctxr-capture-circleback/`.
 - It writes `run.sh` beside it. The launcher sets the agent's `HOME`, changes into the store, and runs the copied
   `sweep.mjs` by absolute path.
 - A store that stops shipping the skill loses the copy.
@@ -555,8 +555,8 @@ A weekly job then looks like this:
 
 ```sh
 hermes cron create --name "Weekly Circleback capture" --workdir /store \
-  --script ctxr-circleback/run.sh --skill ctxr-circleback '49 15 * * 1' \
-  "Follow the ctxr-circleback skill from step 2, using the runner report above."
+  --script ctxr-capture-circleback/run.sh --skill ctxr-capture-circleback '49 15 * * 1' \
+  "Follow the ctxr-capture-circleback skill from step 2, using the runner report above."
 ```
 
 `cb` must be signed in under the agent's home (`docker exec -it -u hermes -e HOME=/opt/data/home <container> cb auth

@@ -264,7 +264,7 @@ RUN set -eux; \
     STORE_DIR=/nonexistent ctxr-update-store; \
     ctxr update --help 2>&1 | grep -q -- '--worktree'
 
-# `ctxr-install-circleback-script`: copy the store's ctxr-circleback skill into Hermes's scripts
+# `ctxr-install-circleback-script`: copy the store's ctxr-capture-circleback skill into Hermes's scripts
 # directory with a `run.sh` launcher, so a Hermes cron job can use it as `--script`. Run by the same
 # `store-update` service, right after ctxr-update-store has pulled the canonical clone. Inert for a
 # store that does not ship the skill, and it removes a copy the store no longer ships. See
@@ -274,7 +274,7 @@ RUN set -eux; \
     chmod +x /usr/local/bin/ctxr-install-circleback-script; \
     sh -n /usr/local/bin/ctxr-install-circleback-script; \
     STORE_DIR=/nonexistent HERMES_HOME=/tmp/ctxr-install-smoke ctxr-install-circleback-script \
-      | grep -q "does not ship ctxr-circleback"; \
+      | grep -q "does not ship ctxr-capture-circleback"; \
     test ! -e /tmp/ctxr-install-smoke
 
 # --- Optional remote harnesses in the existing supervisor ----------------------------------

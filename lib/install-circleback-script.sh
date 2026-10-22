@@ -1,11 +1,11 @@
 #!/bin/sh
-# Put a store's ctxr-circleback runner where Hermes cron can run it.
+# Put a store's ctxr-capture-circleback runner where Hermes cron can run it.
 #
 # Shipped as `ctxr-install-circleback-script`, and run at container start by the `store-update`
 # s6 service, right after `ctxr-update-store` has pulled the canonical clone. Safe to run by hand,
 # too, as the runtime user.
 #
-# WHY. ctxr ships the `ctxr-circleback` skill, with its runner `sweep.mjs` and a rendered
+# WHY. ctxr ships the `ctxr-capture-circleback` skill (capture's retrieval step for Circleback), with its runner `sweep.mjs` and a rendered
 # `settings.json`, into a store that declares a `circleback` block. A Hermes cron job's
 # `--script` must live under $HERMES_HOME/scripts, and Hermes runs a `.sh` with bash and anything
 # else with Python. So the skill directory is copied there, beside a `run.sh` launcher that:
@@ -30,16 +30,22 @@ set -u
 STORE="${STORE_DIR:-${CONTEXTURE_STORE_ROOT:-/store}}"
 SKILLS="${SKILLS_DIR:-$STORE/.agents/skills}"
 HERMES="${HERMES_HOME:-/opt/data}"
-SOURCE="$SKILLS/ctxr-circleback"
-DEST="$HERMES/scripts/ctxr-circleback"
+SOURCE="$SKILLS/ctxr-capture-circleback"
+DEST="$HERMES/scripts/ctxr-capture-circleback"
+# ctxr 0.30.0 shipped the skill as ctxr-circleback; a start on that release installed it here.
+FORMER="$HERMES/scripts/ctxr-circleback"
 
 log() { echo "[ctxr-install-circleback-script] $*"; }
 
+if [ -d "$FORMER" ]; then
+  rm -rf "$FORMER" && log "removed $FORMER: the skill is now ctxr-capture-circleback"
+fi
+
 if [ ! -f "$SOURCE/sweep.mjs" ]; then
   if [ -d "$DEST" ]; then
-    rm -rf "$DEST" && log "removed $DEST: the store no longer ships ctxr-circleback"
+    rm -rf "$DEST" && log "removed $DEST: the store no longer ships ctxr-capture-circleback"
   else
-    log "the store does not ship ctxr-circleback; nothing to install"
+    log "the store does not ship ctxr-capture-circleback; nothing to install"
   fi
   exit 0
 fi
@@ -62,5 +68,5 @@ then
   exit 0
 fi
 chmod +x "$DEST/run.sh" 2>/dev/null
-log "installed $DEST (run.sh launches the store's ctxr-circleback runner)"
+log "installed $DEST (run.sh launches the store's ctxr-capture-circleback runner)"
 exit 0
