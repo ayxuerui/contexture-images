@@ -33,6 +33,6 @@ esac
 
 # After the update, so it copies what the freshly pulled canonical clone ships. Not governed by
 # CTXR_UPDATE_STORE_ENABLED: turning off the store update must not strand a stale runner in
-# Hermes's scripts directory. Inert for a store that does not ship ctxr-circleback.
+# Hermes's scripts directory. Inert for a store that does not ship ctxr-capture-circleback.
 as_runtime_user ctxr-install-circleback-script
 exit 0

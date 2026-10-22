@@ -4,11 +4,12 @@
 # What it guards:
 #
 #   1. It never exits non-zero. It runs at boot.
-#   2. A store that ships ctxr-circleback gets the skill directory copied into Hermes's scripts
+#   2. A store that ships ctxr-capture-circleback gets the skill directory copied into Hermes's scripts
 #      directory, beside a run.sh that sets the agent's HOME, changes into the store, and runs the
 #      copied runner by absolute path -- a cron job's working directory is not guaranteed.
 #   3. A store that stops shipping the skill loses the copy, so an opt-out retires the runner.
 #   4. A store that never shipped it gets nothing.
+#   5. The copy installed under the skill's former name, ctxr-circleback, is removed.
 #
 # Needs only sh and node (to run the launcher against a stand-in runner).
 #
@@ -25,8 +26,8 @@ pass() { echo "ok: $*"; }
 
 STORE="$WORK/store"
 HERMES="$WORK/hermes"
-SKILL="$STORE/.agents/skills/ctxr-circleback"
-DEST="$HERMES/scripts/ctxr-circleback"
+SKILL="$STORE/.agents/skills/ctxr-capture-circleback"
+DEST="$HERMES/scripts/ctxr-capture-circleback"
 mkdir -p "$STORE" "$HERMES/scripts"
 
 install_runner() {
@@ -35,7 +36,7 @@ install_runner() {
 
 # 4. Nothing shipped, nothing installed.
 install_runner || fail "exited non-zero with no skill"
-[ ! -e "$DEST" ] && grep -q "does not ship ctxr-circleback" "$WORK/out" \
+[ ! -e "$DEST" ] && grep -q "does not ship ctxr-capture-circleback" "$WORK/out" \
   && pass "a store without the skill gets nothing" || fail "installed something for a store without the skill"
 
 # 2. Shipped: copied, and the launcher runs the copy from the store with the agent's HOME.
@@ -58,6 +59,12 @@ esac
 rm "$SKILL/settings.json"
 install_runner || fail "exited non-zero refreshing the skill"
 [ ! -e "$DEST/settings.json" ] && pass "a file the store stopped shipping leaves the copy" || fail "stale file kept in the copy"
+
+# The copy a ctxr 0.30.0 start installed under the skill's former name is removed.
+mkdir -p "$HERMES/scripts/ctxr-circleback" && touch "$HERMES/scripts/ctxr-circleback/sweep.mjs"
+install_runner || fail "exited non-zero with a former install present"
+[ ! -e "$HERMES/scripts/ctxr-circleback" ] && [ -f "$DEST/sweep.mjs" ] \
+  && pass "the former ctxr-circleback install is removed" || fail "former ctxr-circleback install left behind"
 
 # 3. Opt-out removes the copy.
 rm -rf "$SKILL"
