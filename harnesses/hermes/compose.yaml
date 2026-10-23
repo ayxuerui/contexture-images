@@ -21,7 +21,7 @@
 # Portable by construction: no published ports, no host paths, no container names, no
 # deployment-specific defaults. Everything here is identical for every store.
 
-x-image: &image ghcr.io/ayxuerui/contexture-hermes:0.31.0
+x-image: &image ghcr.io/ayxuerui/contexture-hermes:0.32.0
 
 # The one-shots and schedulers override the entrypoint, so s6 never starts and with-contenv
 # never runs: HOME and HERMES_HOME are set explicitly rather than inherited.
