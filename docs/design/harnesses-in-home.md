@@ -31,7 +31,7 @@ from a manifest, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
-| Platform | Debian, s6-overlay, `hermes` user + UID remap, SQLite ≥ 3.51.3, node, python, a platform venv (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, s6 service definitions | the image | image release, as today (`watch-ctxr.yml`) |
+| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, a pinned python-build-standalone interpreter (SQLite ≥ 3.51.3 built in) and the platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, s6 service definitions | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes (+ WebUI), claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
 | State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
 
@@ -59,6 +59,9 @@ A separate volume rather than a directory under `/opt/data`, because it is a **c
 - A volume can be dropped to force a clean reinstall without touching state:
   `docker compose down && docker volume rm <store>_harnesses && docker compose up -d`.
 
+`harness-backup` calls `hermes backup`, so its containers mount the volume read-only, as do the
+one-shot backup jobs. `serve` and `workspace-init` do not mount it.
+
 It is owned by the runtime uid, so the agent can write it. That is accepted, not overlooked: the
 agent can already persist anything it likes through `~/.claude/settings.json` hooks, `AGENTS.md` or
 Hermes' `config.yaml`, all in the backed-up home. The line that matters is unchanged -- `serve`, the
@@ -76,6 +79,17 @@ but upstream documents it as a process-local development override and its launch
 So `/opt/harnesses/hermes/` holds the code, and Hermes' runtime stays where upstream puts it. That
 is fine for backups -- `hermes backup` already excludes `tools/` and `installs/` -- and it is the
 only layout `hermes update` maintains. Fighting it would make every Hermes upgrade ours to debug.
+
+Gateway supervision comes along unchanged. Hermes picks its service manager by probing for
+`s6-svscan` as PID 1 and `/run/s6/basedir`, not for its own image, so in this image it registers
+per-profile gateway slots under `/run/service` and restarts them on update exactly as it does
+upstream. The slots need a user named `hermes`, `HERMES_HOME=/opt/data`, and `hermes` on the
+container PATH -- all three hold here.
+
+Optional Hermes features (messaging platforms, providers, search) are no longer prebuilt. The
+Docker image bakes extras in because its venv is read-only; a source install prepares them on first
+use (PM lazy installs) and `hermes update` carries every extra already present into the next
+generation. A first use needs network, once.
 
 Hermes also brings its own Python 3.14, node and Chromium, ignoring the image's. That is a second
 toolchain, but a private one: nothing outside Hermes calls it, and `/opt/harnesses/bin` exposes
@@ -114,8 +128,10 @@ was added or pinned. The volume itself is in neither backup.
   `*-remote` services. It installs anything in the manifest that is missing, and reinstalls a tool
   whose recipe says the platform changed under it (node major for the npm tools). It does not
   upgrade. A failed install fails that harness's services, not the container.
-- **On a schedule**, a `harness-update-cron` service (`harness-schedule`, same as the backup
-  schedulers) runs `harness-install --update` daily at a quiet hour. Per tool: update to the newest
+- **On a schedule**, an s6 longrun `harness-update` inside the agents container runs
+  `harness-install --update` daily at a quiet hour, via `harness-schedule`. It must be in-container,
+  not a separate compose service like the backup schedulers: `hermes update` restarts the gateway
+  through Hermes' own s6 backend, which only reaches the s6 it is running under. Per tool: update to the newest
   version the manifest allows, run its smoke test (`--version`), and on failure put the previous
   version back. One log line per tool, one status file (`/opt/data/.harness-status.json`, like
   `.backup-status.json`).
@@ -129,9 +145,9 @@ Per-tool recipes:
 
 | Name | Install | Update |
 |---|---|---|
-| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback) |
+| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); it restarts its own gateway slots through s6 |
 | hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart the `webui` service |
-| claude | its native installer, `HOME` pointed into `claude/`, binary symlinked | rerun the installer with the target version |
+| claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
 | agy | its installer into `agy/` (it takes no version: a pin is a cache key and an expectation, as today) | same |
 
@@ -158,9 +174,9 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | `hermes` user, `stage2-hook.sh` UID/GID remap and targeted chowns | our `cont-init.d/01-runtime-user` |
 | First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our cont-init |
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
-| `02-reconcile-profiles` (`hermes_cli.container_boot`) | our cont-init calls the same module from the installed checkout |
+| `02-reconcile-profiles` (`hermes_cli.container_boot`) | our cont-init calls the same module with Hermes' python. It is not image-specific: it reads `HERMES_HOME` and `S6_PROFILE_GATEWAY_SCANDIR` (default `/run/service`), and the gateway slots it writes run `hermes gateway run --replace` by PATH as user `hermes` |
 | `dashboard` s6 service | ours, same `run` |
-| SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | ours -- see Open questions |
+| SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed by Hermes (see SQLite below); the platform ships its own through its python |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
 | `/opt/hermes/skills` (used by `harness-config-push` to tell shipped skills from authored) | `HARNESS_CONFIG_BUNDLED_SKILLS_DIR=/opt/harnesses/hermes/skills` |
 | `profile.d/10-hermes-path.sh` | rewritten: `/opt/harnesses/bin:/opt/contexture/venv/bin:...` |
@@ -169,6 +185,23 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 `HERMES_WRITE_SAFE_ROOT=/opt/data:/store:/tmp` and the `HOME=/opt/data/home` /
 `HERMES_HOME=/opt/data` split are unchanged.
 
+### SQLite
+
+Debian trixie's `libsqlite3` is 3.46.1, inside the WAL-reset corruption range (3.7.0 to 3.51.2,
+https://sqlite.org/wal.html#walresetbug). Upstream's image compiles 3.53.4 for that reason, and
+`state.db` is ~1 GB on pkm. Checked on 2026-10-23: Hermes' source install runs on the
+python-build-standalone build its lock pins (`cpython-3.14.9+20261021`), and that interpreter has
+**SQLite 3.53.1 compiled in** as a built-in module, with FTS5 -- it never loads a system
+`libsqlite3`. Hermes and the WebUI are covered by their own interpreter.
+
+The platform ships its own SQLite the same way: its python is a pinned python-build-standalone
+build (checksum-verified, both arches, an `ARG` like every other pin), not Debian's `python3`.
+That covers `harness-remote`, the skill libraries and `harness-backup`'s archive check without a C
+build stage. The image does not install Debian's `sqlite3` or `python3`, so nothing in it can open
+`state.db` through the vulnerable library. A build-time smoke test asserts
+`sqlite3.sqlite_version >= 3.51.3` on the platform python, and CI asserts the same on Hermes'
+after installing it, so a regression in either fails a build rather than a database.
+
 ### Image name and layout
 
 `contexture-hermes` stops being honest once Hermes is not in it. The image becomes
@@ -176,7 +209,7 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 recipes under `lib/harnesses/`. The old name keeps its last tag for rollback; it is not rebuilt.
 
 `watch-agent-clis.yml` is retired. `watch-ctxr.yml` stays. A low-frequency watcher for the platform
-pins (s6-overlay, SQLite, gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
+pins (s6-overlay, the platform python, gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
 optional.
 
 ## Alternatives considered
@@ -215,7 +248,7 @@ packages, that is a platform image change, reviewed.
   no build.
 - A bad upstream release reaches stores the morning after it ships, without a CI gate. The smoke
   test and per-tool rollback bound it; Hermes' bound is a restore.
-- The platform owns s6, the UID remap and SQLite, which upstream used to own.
+- The platform owns s6 and the UID remap, which upstream used to own.
 - First boot on an empty harnesses volume downloads every harness (Hermes' installer alone fetches
   Python, node and Chromium). It needs network, and takes minutes.
 
@@ -242,25 +275,26 @@ Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zi
 1. **Platform image + `harness-install`, CLIs only.** Build `contexture-runtime` without Hermes,
    with the recipes for claude, codex, agy, agent-browser and cb, and boot-test it in CI with an
    empty harnesses volume. Not yet deployed.
-2. **Hermes and the WebUI as harnesses.** Recipes, cont-init replacements, the platform venv, the
-   SQLite answer. CI boots a container, installs Hermes, starts the gateway, runs `hermes backup`
+2. **Hermes and the WebUI as harnesses.** Recipes, cont-init replacements, the platform venv. CI boots a container, installs Hermes, starts the gateway, runs `hermes backup`
    and `hermes import`.
 3. **Migrate** one store (pkm-leilei first, the smallest), then the rest. Retire
    `watch-agent-clis.yml` and stop building `contexture-hermes`.
 
-## Open questions -- to verify before step 2
+## Questions settled before writing this
 
-1. **SQLite.** Does Hermes' PM-provided Python 3.14 link the system `libsqlite3` or bundle its own?
-   If system, the platform must ship ≥ 3.51.3 with FTS5 (upstream compiles 3.53.4; Debian trixie has
-   3.46.1, which carries the WAL-reset corruption bug). If bundled, check its version instead.
-   `state.db` is ~1 GB on pkm; this is the item that can lose data.
-2. **Gateway restarts.** `hermes update` pauses and restarts the gateway itself. Under s6 that
-   must not race the supervisor -- `--no-gateway-restart` plus an `s6-svc -r` from
-   `harness-install` is the likely answer.
-3. **`hermes_cli.container_boot` outside the image.** Confirm it works from a source checkout
-   with our `/run/service` layout, or replace profile reconciliation.
-4. **claude's installer location.** Confirm the native installer can be pointed at
-   `/opt/harnesses/claude` (via `HOME` or a flag) and still run with the agent's real `HOME`.
-5. **Hermes extras.** The Docker image builds the venv with more extras than the source installer's
-   `all` (messaging, otlp, anthropic, bedrock, azure-identity, matrix, google-chat). Find out which
-   our stores use and how to request them from `install.sh` / `hermes update`.
+Each was open in the first draft; all were checked against Hermes at `e29c42a` (2026-10-23).
+
+1. **SQLite.** Hermes' interpreter carries 3.53.1 built in; the platform ships its own through a
+   python-build-standalone interpreter. See SQLite above.
+2. **Gateway restarts under s6.** Hermes' s6 backend is generic (PID-1 probe), so `hermes update`
+   restarts its slots itself. The only constraint is that the update runs inside the agents
+   container, which is why `harness-update` is an s6 service there.
+3. **Profile reconciliation.** `hermes_cli.container_boot` reads `HERMES_HOME` and the scandir from
+   the environment and is called from our cont-init unchanged.
+4. **claude's install location.** `HOME=<dir> install.sh <version>` plus a symlink, as
+   `install-agent-clis.sh` already does in production.
+5. **Hermes extras.** Prepared on first use and carried across updates; nothing to prebuild.
+
+Still unknown, and only answerable by running it (phase 2's CI boot test): how long a cold Hermes
+install takes on an empty volume, and whether `stage2-hook.sh`'s first-boot seeding has a step
+`hermes update` does not repeat that our stores depend on.
