@@ -125,7 +125,7 @@ was added or pinned. The volume itself is in neither backup.
 `harness-install`, a platform script, is the single path that writes `/opt/harnesses`:
 
 - **At boot**, an s6 oneshot `harness-install` runs before the Hermes gateway, dashboard, WebUI and
-  `*-remote` services. It installs anything in the manifest that is missing, and reinstalls a tool
+  `*-remote` slots, which it registers (see Remote sessions). It installs anything in the manifest that is missing, and reinstalls a tool
   whose recipe says the platform changed under it (node major for the npm tools). It does not
   upgrade. A failed install fails that harness's services, not the container.
 - **On a schedule**, an s6 longrun `harness-update` inside the agents container runs
@@ -150,6 +150,45 @@ Per-tool recipes:
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
 | agy | its installer into `agy/` (it takes no version: a pin is a cache key and an expectation, as today) | same |
+
+### Remote sessions
+
+`claude`, `codex` and `agy` remote control run today as three s6 services baked into the image
+(`s6-rc.d/{claude,codex,agy}-remote`), each wrapping `harness-remote run <name>`, with the set of
+names hard-coded in `harness-remote` and one `HARNESS_REMOTE_<NAME>_ARGS` variable each in the
+compose file. Left that way, adding a remote harness -- gemini, say -- would still be an image
+release, which is the cost this design exists to remove.
+
+They do not need s6 as such. `harness-remote` already does the real work: it runs the harness in
+the foreground in its own process group, drops privileges, prefixes its output, kills the whole
+group on exit and waits 10 seconds before returning. What it asks of a supervisor is ordinary --
+start it again after it returns, keep a disabled one down (`finish` exits 125), restart one without
+touching the others, report whether it is up -- and supervisord or Docker would do all of it.
+
+What s6 offers here is the same thing it offers Hermes: services registered at runtime. Hermes
+writes a slot into the `/run/service` scan directory for each profile; `harness-install` does the
+same for each remote harness. The manifest says which harnesses run remotely and how:
+
+```yaml
+harnesses:
+  claude: { remote: [] }                       # claude remote-control
+  codex:  { remote: [--no-daemon] }
+  agy:    { remote: [serve] }
+  gemini: {}                                   # installed, no remote session
+```
+
+At boot, after installing, `harness-install` writes `/run/service/<name>-remote/` for each entry
+with `remote`, and removes slots whose entry lost it. After updating a harness it restarts that one
+slot (`s6-svc -r`). The baked `*-remote` service directories, the hard-coded name list and the
+`HARNESS_REMOTE_AGENTS` / `HARNESS_REMOTE_*_ARGS` variables go away; the manifest replaces them, and
+it is in the config repo, so turning a remote session on shows up in its history.
+
+What stays in the image is per-harness knowledge that is a contract rather than a preference: the
+foreground-only checks (`codex` needs `--no-daemon`, `agy` needs `serve`) move from `harness-remote`
+into each harness's recipe. A harness whose CLI has no foreground remote-control mode cannot be
+given `remote`; its recipe says so and `harness-install` refuses the entry. Whether a given
+harness has such a mode (gemini's CLI, for instance) is a question for its recipe, answered when
+the recipe is written.
 
 ### Rollback
 
