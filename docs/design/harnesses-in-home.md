@@ -31,7 +31,7 @@ from a manifest, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
-| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, a pinned python-build-standalone interpreter (SQLite ≥ 3.51.3 built in) and the platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, s6 service definitions | the image | image release, as today (`watch-ctxr.yml`) |
+| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, s6 service definitions | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes (+ WebUI), claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
 | State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
 
@@ -176,7 +176,7 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
 | `02-reconcile-profiles` (`hermes_cli.container_boot`) | our cont-init calls the same module with Hermes' python. It is not image-specific: it reads `HERMES_HOME` and `S6_PROFILE_GATEWAY_SCANDIR` (default `/run/service`), and the gateway slots it writes run `hermes gateway run --replace` by PATH as user `hermes` |
 | `dashboard` s6 service | ours, same `run` |
-| SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed by Hermes (see SQLite below); the platform ships its own through its python |
+| SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed (see SQLite below) |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
 | `/opt/hermes/skills` (used by `harness-config-push` to tell shipped skills from authored) | `HARNESS_CONFIG_BUNDLED_SKILLS_DIR=/opt/harnesses/hermes/skills` |
 | `profile.d/10-hermes-path.sh` | rewritten: `/opt/harnesses/bin:/opt/contexture/venv/bin:...` |
@@ -194,13 +194,16 @@ python-build-standalone build its lock pins (`cpython-3.14.9+20261021`), and tha
 **SQLite 3.53.1 compiled in** as a built-in module, with FTS5 -- it never loads a system
 `libsqlite3`. Hermes and the WebUI are covered by their own interpreter.
 
-The platform ships its own SQLite the same way: its python is a pinned python-build-standalone
-build (checksum-verified, both arches, an `ARG` like every other pin), not Debian's `python3`.
-That covers `harness-remote`, the skill libraries and `harness-backup`'s archive check without a C
-build stage. The image does not install Debian's `sqlite3` or `python3`, so nothing in it can open
-`state.db` through the vulnerable library. A build-time smoke test asserts
-`sqlite3.sqlite_version >= 3.51.3` on the platform python, and CI asserts the same on Hermes'
-after installing it, so a regression in either fails a build rather than a database.
+So the image ships no SQLite of its own. Nothing on the platform side opens the live `state.db`:
+`harness-backup` inspects the copy inside the `hermes backup` zip, which no writer touches, and
+`harness-remote` and the skill libraries do not use SQLite. The platform venv stays on Debian's
+python3.
+
+Two guards keep it that way. CI asserts `sqlite3.sqlite_version >= 3.51.3` on Hermes' interpreter
+after installing it, because that is where the guarantee now lives and a future lock could change
+it. And the image does not install Debian's `sqlite3` CLI, so an agent poking at `state.db` from its
+shell reaches for Hermes' own tools rather than the vulnerable library. If something on the
+platform ever needs to open a live Hermes database, it runs under Hermes' python, not Debian's.
 
 ### Image name and layout
 
@@ -209,7 +212,7 @@ after installing it, so a regression in either fails a build rather than a datab
 recipes under `lib/harnesses/`. The old name keeps its last tag for rollback; it is not rebuilt.
 
 `watch-agent-clis.yml` is retired. `watch-ctxr.yml` stays. A low-frequency watcher for the platform
-pins (s6-overlay, the platform python, gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
+pins (s6-overlay, gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
 optional.
 
 ## Alternatives considered
@@ -227,6 +230,20 @@ upstream's one supported deployment shape (their s6, their UID remap, their SQLi
 venv). Rejected because Hermes is a harness like the others -- and the stalest one -- and would stay
 the only one whose upgrade needs an image, while every store keeps carrying Hermes whether it wants
 it or not. It remains the fallback if the platform work below proves fragile.
+
+**No s6: one process per compose service.** Run the gateway, dashboard, WebUI and each
+`*-remote` as their own services on this image, and let Docker's restart policy supervise them. The
+case is real: Docker already is a supervisor; each process gets its own logs, health check and
+restart; and the platform would stop owning s6-overlay and its cont-init plumbing. An update could
+even restart processes without a supervisor, if each service exits when `.installed.json` shows its
+harness changed and `restart: always` brings it back on the new binary. Rejected because Hermes'
+container features run through a service manager, and s6 is its only one that works in a
+container (the others are systemd, launchd and Windows; with none, it reports `none`):
+per-profile gateways registered at runtime by `hermes profile create`, the boot-time
+reconciliation that brings each back in its last state, and `hermes update`'s own pause and
+restart of the gateway. Compose cannot add a service at runtime, and replacing those means writing
+the supervision Hermes already has. It would flip if the stores ran no Hermes, or only ever one
+Hermes profile and we accepted reimplementing the update restart.
 
 **Let each harness self-update in place.** Least code. Rejected because a pin cannot be honoured
 and nothing can report what is installed; `harness-install` keeps one writer.
@@ -284,8 +301,8 @@ Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zi
 
 Each was open in the first draft; all were checked against Hermes at `e29c42a` (2026-10-23).
 
-1. **SQLite.** Hermes' interpreter carries 3.53.1 built in; the platform ships its own through a
-   python-build-standalone interpreter. See SQLite above.
+1. **SQLite.** Hermes' interpreter carries 3.53.1 built in, and nothing on the platform opens a
+   live database, so no SQLite is shipped. See SQLite above.
 2. **Gateway restarts under s6.** Hermes' s6 backend is generic (PID-1 probe), so `hermes update`
    restarts its slots itself. The only constraint is that the update runs inside the agents
    container, which is why `harness-update` is an s6 service there.
