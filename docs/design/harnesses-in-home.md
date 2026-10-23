@@ -145,7 +145,7 @@ Per-tool recipes:
 
 | Name | Install | Update |
 |---|---|---|
-| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); it restarts its own gateway slots through s6 |
+| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); it restarts its own gateway slots through s6, but leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
 | hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart the `webui` service |
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
@@ -231,19 +231,26 @@ venv). Rejected because Hermes is a harness like the others -- and the stalest o
 the only one whose upgrade needs an image, while every store keeps carrying Hermes whether it wants
 it or not. It remains the fallback if the platform work below proves fragile.
 
-**No s6: one process per compose service.** Run the gateway, dashboard, WebUI and each
-`*-remote` as their own services on this image, and let Docker's restart policy supervise them. The
-case is real: Docker already is a supervisor; each process gets its own logs, health check and
-restart; and the platform would stop owning s6-overlay and its cont-init plumbing. An update could
-even restart processes without a supervisor, if each service exits when `.installed.json` shows its
-harness changed and `restart: always` brings it back on the new binary. Rejected because Hermes'
-container features run through a service manager, and s6 is its only one that works in a
-container (the others are systemd, launchd and Windows; with none, it reports `none`):
-per-profile gateways registered at runtime by `hermes profile create`, the boot-time
-reconciliation that brings each back in its last state, and `hermes update`'s own pause and
-restart of the gateway. Compose cannot add a service at runtime, and replacing those means writing
-the supervision Hermes already has. It would flip if the stores ran no Hermes, or only ever one
-Hermes profile and we accepted reimplementing the update restart.
+**No s6: another supervisor.** The gateway, dashboard and WebUI can share one container under any
+process supervisor -- supervisord, or `tini` and a short script -- or run as separate compose
+services from this image with Docker's `restart: always` as the supervisor. Hermes supports this
+explicitly: `hermes gateway run --external-supervisor` makes in-chat restarts and `hermes update`
+exit the gateway with status 75 and expect the supervisor to relaunch it on the new code. The UID
+remap is not s6's either; any root entrypoint can do it before dropping privileges. So
+`hermes update` works without s6, and the dashboard and WebUI need restarting by us under either
+supervisor.
+
+What only s6 gives is Hermes' runtime gateway registration: `hermes profile create` adds a
+supervised slot under `/run/service`, and `container_boot` brings each profile's gateway back in its
+last recorded state (an operator-stopped gateway stays stopped). Under another supervisor every
+profile's gateway is a line of supervisor config, and adding a profile means editing it and
+restarting. Kept s6 because that is the one capability with no substitute, and because the rest of
+its cost is already paid: this repository already writes s6 service directories (`webui`,
+`store-update`, `*-remote`) and tests them under real s6-overlay
+(`lib/tests/harness-remote-container-test.py`). Switching supervisors would rewrite those for no
+gain. The new cost of owning s6 is installing s6-overlay (four checksummed tarballs) and the
+UID-remap cont-init, which another supervisor needs too. It would flip if Hermes stopped being
+used, or if the s6-overlay install proves to be more upkeep than that.
 
 **Let each harness self-update in place.** Least code. Rejected because a pin cannot be honoured
 and nothing can report what is installed; `harness-install` keeps one writer.
@@ -304,7 +311,8 @@ Each was open in the first draft; all were checked against Hermes at `e29c42a` (
 1. **SQLite.** Hermes' interpreter carries 3.53.1 built in, and nothing on the platform opens a
    live database, so no SQLite is shipped. See SQLite above.
 2. **Gateway restarts under s6.** Hermes' s6 backend is generic (PID-1 probe), so `hermes update`
-   restarts its slots itself. The only constraint is that the update runs inside the agents
+   restarts its slots itself (and under another supervisor, `--external-supervisor` would do the
+   same). It does not restart the dashboard or WebUI under any supervisor; `harness-install` does. The only constraint is that the update runs inside the agents
    container, which is why `harness-update` is an s6 service there.
 3. **Profile reconciliation.** `hermes_cli.container_boot` reads `HERMES_HOME` and the scandir from
    the environment and is called from our cont-init unchanged.
