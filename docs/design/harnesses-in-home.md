@@ -297,9 +297,10 @@ What only s6 gives is Hermes' runtime gateway registration: `hermes profile crea
 supervised slot under `/run/service`, and `container_boot` brings each profile's gateway back in its
 last recorded state (an operator-stopped gateway stays stopped). Under another supervisor every
 profile's gateway is a line of supervisor config, and adding a profile means editing it and
-restarting. That capability is in use: on 2026-10-23 pkm runs a second profile, `leilei`, whose
-`gateway-leilei` slot carries a live Telegram connection beside `gateway-default` (readyrun-brain
-and pkm-leilei run the default profile only). Kept s6 because that is the one capability with no substitute, and because the rest of
+restarting. Until 2026-10-23 that was in use -- pkm ran a second profile, `leilei`, with a live
+Telegram gateway -- but that bot moved to the pkm-leilei store that day and the profile was
+deleted, so today every store runs the default profile only. Kept s6 anyway, because it is the one
+capability with no substitute and costs little to keep ready, and because the rest of
 its cost is already paid: this repository already writes s6 service directories (`webui`,
 `store-update`, `*-remote`; under Services they become recipe-declared slots) and tests them under real s6-overlay
 (`lib/tests/harness-remote-container-test.py`). Switching supervisors would rewrite those for no
