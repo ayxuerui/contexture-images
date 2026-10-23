@@ -31,8 +31,8 @@ from a manifest, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
-| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, s6 service definitions | the image | image release, as today (`watch-ctxr.yml`) |
-| Harnesses | Hermes (+ WebUI), claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
+| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own s6 services (`harness-install`, `harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
+| Harnesses | Hermes, the Hermes WebUI, claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
 | State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
 
 The image tag stays the ctxr version, and merging a ctxr bump stays the rollout. That is the one
@@ -102,20 +102,24 @@ after:
 
 ```yaml
 harnesses:
-  hermes:        { channel: stable }
-  hermes-webui:  { channel: stable }
-  claude:        { channel: stable }
-  codex:         {}
-  agy:           {}
+  hermes:        { channel: stable, services: [gateway, dashboard] }
+  hermes-webui:  { channel: stable, services: [webui] }
+  claude:        { channel: stable, services: [remote] }
+  codex:         { services: [remote] }
+  agy:           { services: [remote] }
   agent-browser: {}
   cb:            {}
-  # opencode:    {}            adding a harness is one line, then a restart
+  # gemini:      {}                     adding a harness is one line, then a restart
   # codex:       { version: 0.162.1 }   a pin holds a tool back
 ```
 
-No version means "latest on its channel". A `version` holds it. Each name maps to an installer
-recipe shipped in the image (`lib/harnesses/<name>.sh`: how to install, how to update, how to read
-the installed version, where its binary is). A name with no recipe fails loudly at boot.
+No version means "latest on its channel". A `version` holds it. `services` picks which of the
+harness's services run in this container (see Services); a harness with none is just a CLI on PATH.
+
+Each name maps to a recipe shipped in the image, `lib/harnesses/<name>/`: how to install and update
+it, how to read the installed version, where its binary is, which harnesses it needs
+(`hermes-webui` needs `hermes`), and which services it can run. A name with no recipe, or a service
+its recipe does not offer, fails loudly at boot.
 
 `harness-config-push` adds `harnesses.yaml` to its allowlist, so the config repo shows when a tool
 was added or pinned. The volume itself is in neither backup.
@@ -124,8 +128,8 @@ was added or pinned. The volume itself is in neither backup.
 
 `harness-install`, a platform script, is the single path that writes `/opt/harnesses`:
 
-- **At boot**, an s6 oneshot `harness-install` runs before the Hermes gateway, dashboard, WebUI and
-  `*-remote` slots, which it registers (see Remote sessions). It installs anything in the manifest that is missing, and reinstalls a tool
+- **At boot**, an s6 oneshot `harness-install` runs before any harness service, and is what
+  registers them (see Services). It installs anything in the manifest that is missing, and reinstalls a tool
   whose recipe says the platform changed under it (node major for the npm tools). It does not
   upgrade. A failed install fails that harness's services, not the container.
 - **On a schedule**, an s6 longrun `harness-update` inside the agents container runs
@@ -146,49 +150,59 @@ Per-tool recipes:
 | Name | Install | Update |
 |---|---|---|
 | hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); it restarts its own gateway slots through s6, but leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
-| hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart the `webui` service |
+| hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart its `webui` service |
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
 | agy | its installer into `agy/` (it takes no version: a pin is a cache key and an expectation, as today) | same |
 
-### Remote sessions
+### Services
 
-`claude`, `codex` and `agy` remote control run today as three s6 services baked into the image
-(`s6-rc.d/{claude,codex,agy}-remote`), each wrapping `harness-remote run <name>`, with the set of
-names hard-coded in `harness-remote` and one `HARNESS_REMOTE_<NAME>_ARGS` variable each in the
-compose file. Left that way, adding a remote harness -- gemini, say -- would still be an image
-release, which is the cost this design exists to remove.
+A harness can bring long-running services, and every one of them is the same kind of thing:
 
-They do not need s6 as such. `harness-remote` already does the real work: it runs the harness in
-the foreground in its own process group, drops privileges, prefixes its output, kills the whole
-group on exit and waits 10 seconds before returning. What it asks of a supervisor is ordinary --
-start it again after it returns, keep a disabled one down (`finish` exits 125), restart one without
-touching the others, report whether it is up -- and supervisord or Docker would do all of it.
+| Harness | Service | Runs |
+|---|---|---|
+| hermes | `gateway` | Hermes' gateways, one per profile -- registered by Hermes itself (below) |
+| hermes | `dashboard` | `hermes dashboard --host ... --port ... --no-open` |
+| hermes-webui | `webui` | the WebUI server, on Hermes' python, agent in-process |
+| claude | `remote` | `claude remote-control` |
+| codex | `remote` | `codex remote-control --no-daemon` |
+| agy | `remote` | `agy remote-control serve` |
 
-What s6 offers here is the same thing it offers Hermes: services registered at runtime. Hermes
-writes a slot into the `/run/service` scan directory for each profile; `harness-install` does the
-same for each remote harness. The manifest says which harnesses run remotely and how:
+Today these are split across two mechanisms and none of them is chosen by the manifest: the
+dashboard comes from the Hermes base image, `webui` and the three `*-remote` services are s6
+directories baked into this image, each switched on by its own variable (`HERMES_DASHBOARD`,
+`HERMES_WEBUI_ENABLED`, `HARNESS_REMOTE_AGENTS`), and `harness-remote` hard-codes the list of
+remote harnesses. Adding one -- gemini, say -- is an image release, the cost this design exists to
+remove.
 
-```yaml
-harnesses:
-  claude: { remote: [] }                       # claude remote-control
-  codex:  { remote: [--no-daemon] }
-  agy:    { remote: [serve] }
-  gemini: {}                                   # installed, no remote session
-```
+After: a harness's recipe declares the services it can run -- name, command, the user and
+directory to run it as, and its stay-down policy -- and the manifest's `services` picks which run.
+At boot, after installing, `harness-install` writes one s6 slot per selected service into the
+`/run/service` scan directory (`hermes-dashboard`, `hermes-webui`, `claude-remote`, ...; the recipe
+names the slot, and two recipes claiming one name is a boot error) and removes slots no longer
+selected. After updating a harness it restarts that harness's slots (`s6-svc -r`) -- which is also
+how the dashboard and WebUI get onto new code after `hermes update`, since Hermes' updater leaves
+both to their owner. The image then carries no harness's service at all: the baked `webui` and
+`*-remote` directories, the enable variables and the hard-coded list all go, and the manifest is in
+the config repo, so switching a service on shows up in its history.
 
-At boot, after installing, `harness-install` writes `/run/service/<name>-remote/` for each entry
-with `remote`, and removes slots whose entry lost it. After updating a harness it restarts that one
-slot (`s6-svc -r`). The baked `*-remote` service directories, the hard-coded name list and the
-`HARNESS_REMOTE_AGENTS` / `HARNESS_REMOTE_*_ARGS` variables go away; the manifest replaces them, and
-it is in the config repo, so turning a remote session on shows up in its history.
+What a deployment still sets in compose is what is genuinely its own: ports, origins, passwords,
+proxy trust (`HERMES_DASHBOARD_PORT`, `HERMES_WEBUI_ALLOWED_ORIGINS`, ...). Those are inputs to a
+service, not the choice of whether it runs.
 
-What stays in the image is per-harness knowledge that is a contract rather than a preference: the
-foreground-only checks (`codex` needs `--no-daemon`, `agy` needs `serve`) move from `harness-remote`
-into each harness's recipe. A harness whose CLI has no foreground remote-control mode cannot be
-given `remote`; its recipe says so and `harness-install` refuses the entry. Whether a given
-harness has such a mode (gemini's CLI, for instance) is a question for its recipe, answered when
-the recipe is written.
+**Hermes' `gateway` is the one service whose slots it names itself.** Hermes already registers a
+`gateway-<profile>` slot per profile in the same scan directory and brings each back in its last
+state (`hermes_cli.container_boot`). Selecting `gateway` makes `harness-install` run that
+reconciliation rather than write a slot; `hermes profile create` then adds slots at runtime without
+us. Both mechanisms write the same directory, which is why it is the one place where services come
+from.
+
+What each recipe keeps is the part that is a contract rather than a preference: the foreground
+checks that `harness-remote` makes today (`codex` must have `--no-daemon`, `agy` must be `serve`, a
+background launcher would make a dead service look healthy) move into the recipe. A harness whose
+CLI has no foreground mode for a service cannot offer it. Whether gemini's CLI has a remote-control
+mode is answered when its recipe is written. `harness-remote` itself stays as the generic wrapper
+the remote slots run.
 
 ### Rollback
 
@@ -213,8 +227,8 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | `hermes` user, `stage2-hook.sh` UID/GID remap and targeted chowns | our `cont-init.d/01-runtime-user` |
 | First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our cont-init |
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
-| `02-reconcile-profiles` (`hermes_cli.container_boot`) | our cont-init calls the same module with Hermes' python. It is not image-specific: it reads `HERMES_HOME` and `S6_PROFILE_GATEWAY_SCANDIR` (default `/run/service`), and the gateway slots it writes run `hermes gateway run --replace` by PATH as user `hermes` |
-| `dashboard` s6 service | ours, same `run` |
+| `02-reconcile-profiles` (`hermes_cli.container_boot`) | `harness-install` calls the same module with Hermes' python when `gateway` is selected. It is not image-specific: it reads `HERMES_HOME` and `S6_PROFILE_GATEWAY_SCANDIR` (default `/run/service`), and the gateway slots it writes run `hermes gateway run --replace` by PATH as user `hermes` |
+| `dashboard` s6 service | the `hermes` recipe's `dashboard` service |
 | SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed (see SQLite below) |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
 | `/opt/hermes/skills` (used by `harness-config-push` to tell shipped skills from authored) | `HARNESS_CONFIG_BUNDLED_SKILLS_DIR=/opt/harnesses/hermes/skills` |
@@ -285,7 +299,7 @@ last recorded state (an operator-stopped gateway stays stopped). Under another s
 profile's gateway is a line of supervisor config, and adding a profile means editing it and
 restarting. Kept s6 because that is the one capability with no substitute, and because the rest of
 its cost is already paid: this repository already writes s6 service directories (`webui`,
-`store-update`, `*-remote`) and tests them under real s6-overlay
+`store-update`, `*-remote`; under Services they become recipe-declared slots) and tests them under real s6-overlay
 (`lib/tests/harness-remote-container-test.py`). Switching supervisors would rewrite those for no
 gain. The new cost of owning s6 is installing s6-overlay (four checksummed tarballs) and the
 UID-remap cont-init, which another supervisor needs too. It would flip if Hermes stopped being
@@ -329,7 +343,7 @@ counted first:
    compose file from `main`, so the merge is the rollout -- as for a ctxr bump, wait for the
    release before `up`.
 4. `docker compose up -d`; `harness-install` populates the volume. Check
-   `/opt/data/.harness-status.json`, the gateway, WebUI and each `*-remote`.
+   `/opt/data/.harness-status.json` and every selected service's slot (`harness-install status`).
 
 Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zip from step 1.
 
