@@ -255,6 +255,15 @@ probe = "http://127.0.0.1:${PORTED_PORT:-9000}/"
         self.assertEqual(self.installs('split'), ['1.0.0', '1.0.0'])
         self.assertEqual(self.current('split'), '1.0.0')
 
+    def test_wait_until_the_selection_is_installed(self):
+        self.assertIn('gave up waiting: not installed: alpha', self.run_tool('wait', expect=1, HARNESSES='alpha', HARNESS_WAIT_SECONDS='0'))
+        self.run_tool(HARNESSES='alpha')
+        self.run_tool('wait', HARNESSES='alpha', HARNESS_WAIT_SECONDS='0')
+        with open(self.root / '.lock', 'w') as handle:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            self.assertIn('an install is still running', self.run_tool('wait', expect=1, HARNESSES='alpha', HARNESS_WAIT_SECONDS='0'))
+
     def test_hooks(self):
         self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated'))
         self.run_tool(HARNESSES='hooked')

@@ -54,6 +54,10 @@ def home():
 
 
 def describe():
+    # The recipes say how each harness's state is backed up, and only installed harnesses are
+    # described: on a first boot, wait for the agents container to finish installing.
+    if subprocess.run(['harness-install', 'wait']).returncode != 0:
+        fail('the selected harnesses are not installed; nothing was backed up')
     result = subprocess.run(['harness-install', 'describe'], capture_output=True, text=True)
     if result.returncode != 0:
         fail('harness-install describe failed: ' + (result.stderr or result.stdout).strip())
