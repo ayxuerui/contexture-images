@@ -31,7 +31,7 @@ from a manifest, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
-| Platform | Debian, s6-overlay, `hermes` user + UID remap, node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own s6 services (`harness-install`, `harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
+| Platform | Debian, `tini`, supervisord, the boot entrypoint (`hermes` user + UID remap), node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own programs (`harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes, the Hermes WebUI, claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
 | State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
 
@@ -80,11 +80,13 @@ So `/opt/harnesses/hermes/` holds the code, and Hermes' runtime stays where upst
 is fine for backups -- `hermes backup` already excludes `tools/` and `installs/` -- and it is the
 only layout `hermes update` maintains. Fighting it would make every Hermes upgrade ours to debug.
 
-Gateway supervision comes along unchanged. Hermes picks its service manager by probing for
-`s6-svscan` as PID 1 and `/run/s6/basedir`, not for its own image, so in this image it registers
-per-profile gateway slots under `/run/service` and restarts them on update exactly as it does
-upstream. The slots need a user named `hermes`, `HERMES_HOME=/opt/data`, and `hermes` on the
-container PATH -- all three hold here.
+Gateway supervision does not need Hermes' own. Hermes picks a service manager by probing for s6
+(`s6-svscan` as PID 1), Windows, launchd or systemd; in this image it finds none and reports
+`none`, which is a supported shape: `hermes gateway run --replace --external-supervisor` declares
+that a wrapper owns the foreground gateway, and an in-chat restart, `hermes gateway restart` or
+`hermes update` then exits it with status 75 for that wrapper to relaunch on the new code
+(`reference/cli-commands.md`, "`--external-supervisor` is a restart-policy contract"). Here the
+wrapper is supervisord; see Supervision.
 
 Optional Hermes features (messaging platforms, providers, search) are no longer prebuilt. The
 Docker image bakes extras in because its venv is read-only; a source install prepares them on first
@@ -128,17 +130,18 @@ was added or pinned. The volume itself is in neither backup.
 
 `harness-install`, a platform script, is the single path that writes `/opt/harnesses`:
 
-- **At boot**, an s6 oneshot `harness-install` runs before any harness service, and is what
-  registers them (see Services). It installs anything in the manifest that is missing, and reinstalls a tool
-  whose recipe says the platform changed under it (node major for the npm tools). It does not
-  upgrade. A failed install fails that harness's services, not the container.
-- **On a schedule**, an s6 longrun `harness-update` inside the agents container runs
-  `harness-install --update` daily at a quiet hour, via `harness-schedule`. It must be in-container,
-  not a separate compose service like the backup schedulers: `hermes update` restarts the gateway
-  through Hermes' own s6 backend, which only reaches the s6 it is running under. Per tool: update to the newest
-  version the manifest allows, run its smoke test (`--version`), and on failure put the previous
-  version back. One log line per tool, one status file (`/opt/data/.harness-status.json`, like
-  `.backup-status.json`).
+- **At boot**, the entrypoint runs `harness-install` before it starts the supervisor, so every
+  harness is in place before any service runs. It installs anything in the manifest that is
+  missing, reinstalls a tool whose recipe says the platform changed under it (node major for the
+  npm tools), and writes the supervisor's program list (see Services). It does not upgrade. A
+  failed install leaves that harness's programs out and is reported; it does not stop the boot.
+- **On a schedule**, a supervised `harness-update` program inside the agents container runs
+  `harness-install --update` daily at a quiet hour, via `harness-schedule`. It must be
+  in-container, not a separate compose service like the backup schedulers: it restarts programs
+  through supervisord's socket, and `hermes update` stops and restarts gateways by PID, both of
+  which only reach the container they run in. Per tool: update to the newest version the manifest
+  allows, run its smoke test (`--version`), and on failure put the previous version back. One log
+  line per tool, one status file (`/opt/data/.harness-status.json`, like `.backup-status.json`).
 - **By hand**, `docker exec -u hermes <container> harness-install --update [name]`.
 
 The harnesses' own auto-updaters are **turned off** (`DISABLE_AUTOUPDATER=1` for claude and the
@@ -149,7 +152,7 @@ Per-tool recipes:
 
 | Name | Install | Update |
 |---|---|---|
-| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); it restarts its own gateway slots through s6, but leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
+| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); the gateway exits 75 and supervisord relaunches it on the new code, but Hermes leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
 | hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart its `webui` service |
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
@@ -161,7 +164,7 @@ A harness can bring long-running services, and every one of them is the same kin
 
 | Harness | Service | Runs |
 |---|---|---|
-| hermes | `gateway` | Hermes' gateways, one per profile -- registered by Hermes itself (below) |
+| hermes | `gateway` | `hermes gateway run --replace --external-supervisor`, one per profile (below) |
 | hermes | `dashboard` | `hermes dashboard --host ... --port ... --no-open` |
 | hermes-webui | `webui` | the WebUI server, on Hermes' python, agent in-process |
 | claude | `remote` | `claude remote-control` |
@@ -175,34 +178,65 @@ directories baked into this image, each switched on by its own variable (`HERMES
 remote harnesses. Adding one -- gemini, say -- is an image release, the cost this design exists to
 remove.
 
-After: a harness's recipe declares the services it can run -- name, command, the user and
-directory to run it as, and its stay-down policy -- and the manifest's `services` picks which run.
-At boot, after installing, `harness-install` writes one s6 slot per selected service into the
-`/run/service` scan directory (`hermes-dashboard`, `hermes-webui`, `claude-remote`, ...; the recipe
-names the slot, and two recipes claiming one name is a boot error) and removes slots no longer
-selected. After updating a harness it restarts that harness's slots (`s6-svc -r`) -- which is also
-how the dashboard and WebUI get onto new code after `hermes update`, since Hermes' updater leaves
-both to their owner. The image then carries no harness's service at all: the baked `webui` and
-`*-remote` directories, the enable variables and the hard-coded list all go, and the manifest is in
-the config repo, so switching a service on shows up in its history.
+After: a harness's recipe declares the services it can run -- name, command, directory, and the
+probe that says it is serving -- and the manifest's `services` picks which run. `harness-install`
+renders one supervisord `[program:...]` per selected service (`hermes-dashboard`, `hermes-webui`,
+`claude-remote`, ...; the recipe names it, and two recipes claiming one name is a boot error) into
+the generated `/run/harness/supervisord.conf`. An unselected service simply has no program, which
+replaces both the enable variables and s6's "exit 125 to stay down" `finish` scripts. After updating
+a harness it restarts that harness's programs (`supervisorctl restart`) -- also how the dashboard
+and WebUI get onto new code after `hermes update`, since Hermes' updater leaves both to their owner.
+A manifest edit applies with `harness-install --services`, which re-renders and runs
+`supervisorctl update`: changed programs restart, removed ones stop, others are untouched.
+
+The image then carries no harness's service at all: the baked `webui` and `*-remote` directories,
+the enable variables and the hard-coded list all go, and the manifest is in the config repo, so
+switching a service on shows up in its history. The container healthcheck stops naming ports and
+becomes `harness-install status`: every selected program is RUNNING and its recipe's probe answers.
 
 What a deployment still sets in compose is what is genuinely its own: ports, origins, passwords,
 proxy trust (`HERMES_DASHBOARD_PORT`, `HERMES_WEBUI_ALLOWED_ORIGINS`, ...). Those are inputs to a
 service, not the choice of whether it runs.
 
-**Hermes' `gateway` is the one service whose slots it names itself.** Hermes already registers a
-`gateway-<profile>` slot per profile in the same scan directory and brings each back in its last
-state (`hermes_cli.container_boot`). Selecting `gateway` makes `harness-install` run that
-reconciliation rather than write a slot; `hermes profile create` then adds slots at runtime without
-us. Both mechanisms write the same directory, which is why it is the one place where services come
-from.
+**Hermes' `gateway` is one program per profile.** `harness-install` renders `hermes-gateway` for
+the root profile and `hermes-gateway-<name>` for each directory under `$HERMES_HOME/profiles/` with
+a `SOUL.md` -- the marker Hermes' own boot reconciliation uses. Every store runs the default profile
+only today. A profile created at runtime (`hermes profile create`) gets its gateway on the next
+`harness-install --services` or container start, not instantly; and a gateway is stopped with
+`supervisorctl stop`, since `hermes gateway stop` from inside would be relaunched. Both are the
+price of not running s6 (see Alternatives).
 
 What each recipe keeps is the part that is a contract rather than a preference: the foreground
 checks that `harness-remote` makes today (`codex` must have `--no-daemon`, `agy` must be `serve`, a
 background launcher would make a dead service look healthy) move into the recipe. A harness whose
 CLI has no foreground mode for a service cannot offer it. Whether gemini's CLI has a remote-control
 mode is answered when its recipe is written. `harness-remote` itself stays as the generic wrapper
-the remote slots run.
+the remote programs run; its `status` reads `supervisorctl status` instead of `s6-svstat`.
+
+### Supervision
+
+One container, the same as today, with nothing in it running as root once it has booted:
+
+1. **PID 1 is `tini`**, which forwards signals and reaps orphans -- remote sessions and Hermes'
+   tools spawn grandchildren that outlive their parents.
+2. **The entrypoint, as root,** applies `PUID`/`PGID` to the `hermes` user (`usermod`/`groupmod`
+   and targeted chowns, as upstream's `stage2-hook.sh` does), generates `API_SERVER_KEY` if absent,
+   then drops to `hermes` with `setpriv` for everything after.
+3. **`harness-install`** installs and renders the program list (Installing and updating).
+4. **`exec supervisord`**, as `hermes`, with the generated config: one program per selected
+   service plus the platform's own two, `harness-update` (long-running) and `store-update` (runs
+   once at start, `autorestart=false`, never fails the boot -- the s6 `finish` exit 125 it replaces).
+
+Every program logs to the container's stdout with a `[name]` prefix, so `docker compose logs`
+stays the one place to read. Programs restart on any exit (`autorestart=true`), which is what
+`--external-supervisor`'s status 75 needs. supervisord's one sharp edge is that a program which
+keeps dying inside `startsecs` goes FATAL and is never retried; programs get a long `startretries`
+and the healthcheck reports a FATAL program, so a crash loop is visible rather than silent.
+`stopasgroup`/`killasgroup` take a remote session's whole process group down with it, which
+`harness-remote` already arranges.
+
+The one-shot compose services (`workspace-init`, `serve`, the backup jobs) override the entrypoint
+as they do today and never start the supervisor.
 
 ### Rollback
 
@@ -223,12 +257,12 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 
 | Today, from the base | After |
 |---|---|
-| s6-overlay, `/init`, `entrypoint-dispatch.sh` | installed by the image (s6-overlay v3, checksum-pinned) |
-| `hermes` user, `stage2-hook.sh` UID/GID remap and targeted chowns | our `cont-init.d/01-runtime-user` |
-| First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our cont-init |
+| s6-overlay, `/init`, `entrypoint-dispatch.sh` | `tini` + our entrypoint + supervisord (Debian packages); no s6 |
+| `hermes` user, `stage2-hook.sh` UID/GID remap and targeted chowns | our entrypoint, as root, before it drops privileges |
+| First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our entrypoint |
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
-| `02-reconcile-profiles` (`hermes_cli.container_boot`) | `harness-install` calls the same module with Hermes' python when `gateway` is selected. It is not image-specific: it reads `HERMES_HOME` and `S6_PROFILE_GATEWAY_SCANDIR` (default `/run/service`), and the gateway slots it writes run `hermes gateway run --replace` by PATH as user `hermes` |
-| `dashboard` s6 service | the `hermes` recipe's `dashboard` service |
+| `02-reconcile-profiles` (`hermes_cli.container_boot`), `015-supervise-perms` | gone: `harness-install` renders a gateway program per profile instead. Lost with it: a gateway an operator stopped stays stopped across a reboot (`desired_state`); here every selected gateway starts |
+| `dashboard` s6 service, `main-hermes` placeholder | the `hermes` recipe's `dashboard` program; no placeholder needed |
 | SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed (see SQLite below) |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
 | `/opt/hermes/skills` (used by `harness-config-push` to tell shipped skills from authored) | `HARNESS_CONFIG_BUNDLED_SKILLS_DIR=/opt/harnesses/hermes/skills` |
@@ -265,7 +299,7 @@ platform ever needs to open a live Hermes database, it runs under Hermes' python
 recipes under `lib/harnesses/`. The old name keeps its last tag for rollback; it is not rebuilt.
 
 `watch-agent-clis.yml` is retired. `watch-ctxr.yml` stays. A low-frequency watcher for the platform
-pins (s6-overlay, gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
+pins (gh, restic, rclone, pandoc, jq) replaces nothing that exists today and is
 optional.
 
 ## Alternatives considered
@@ -284,29 +318,33 @@ venv). Rejected because Hermes is a harness like the others -- and the stalest o
 the only one whose upgrade needs an image, while every store keeps carrying Hermes whether it wants
 it or not. It remains the fallback if the platform work below proves fragile.
 
-**No s6: another supervisor.** The gateway, dashboard and WebUI can share one container under any
-process supervisor -- supervisord, or `tini` and a short script -- or run as separate compose
-services from this image with Docker's `restart: always` as the supervisor. Hermes supports this
-explicitly: `hermes gateway run --external-supervisor` makes in-chat restarts and `hermes update`
-exit the gateway with status 75 and expect the supervisor to relaunch it on the new code. The UID
-remap is not s6's either; any root entrypoint can do it before dropping privileges. So
-`hermes update` works without s6, and the dashboard and WebUI need restarting by us under either
-supervisor.
+**Keep s6-overlay.** Upstream's image runs it and the stores run it today without trouble. It is
+the supervisor Hermes recognises: Hermes detects s6 as PID 1 and then does its own supervision --
+`hermes profile create` registers a `gateway-<profile>` slot under `/run/service` at runtime,
+`container_boot` brings each profile's gateway back in its last recorded state (an
+operator-stopped gateway stays stopped), and `hermes gateway start/stop/restart` act through s6.
+Under supervisord Hermes sees no service manager, so those become ours: a new profile's gateway
+waits for `harness-install --services`, stop is `supervisorctl stop`, and a stopped gateway starts
+again on reboot.
 
-What only s6 gives is Hermes' runtime gateway registration: `hermes profile create` adds a
-supervised slot under `/run/service`, and `container_boot` brings each profile's gateway back in its
-last recorded state (an operator-stopped gateway stays stopped). Under another supervisor every
-profile's gateway is a line of supervisor config, and adding a profile means editing it and
-restarting. Until 2026-10-23 that was in use -- pkm ran a second profile, `leilei`, with a live
-Telegram gateway -- but that bot moved to the pkm-leilei store that day and the profile was
-deleted, so today every store runs the default profile only. Kept s6 anyway, because it is the one
-capability with no substitute and costs little to keep ready, and because the rest of
-its cost is already paid: this repository already writes s6 service directories (`webui`,
-`store-update`, `*-remote`; under Services they become recipe-declared slots) and tests them under real s6-overlay
-(`lib/tests/harness-remote-container-test.py`). Switching supervisors would rewrite those for no
-gain. The new cost of owning s6 is installing s6-overlay (four checksummed tarballs) and the
-UID-remap cont-init, which another supervisor needs too. It would flip if Hermes stopped being
-used, or if the s6-overlay install proves to be more upkeep than that.
+Rejected because none of that is used. Every store runs the default profile only -- pkm's second
+profile, `leilei`, moved its Telegram bot to the pkm-leilei store on 2026-10-23 and was deleted --
+and the ~20-person plan is separate stores, not profiles. What remains is general supervision, and
+for that s6-overlay is the more expensive choice to own: four checksummed tarballs and their
+conventions (`with-contenv`, `s6-setuidgid`, `finish` exit 125, `timeout-kill`, the s6-rc
+bundle), against one Debian package and one generated file. Nor does s6 save a rewrite: the baked
+`webui` and `*-remote` directories go under Services either way. And the combination this design
+needs, a source install updated in place, is not what upstream exercises under s6 either -- their
+image refuses `hermes update` -- whereas `--external-supervisor` is a documented contract.
+
+It would flip if Hermes profiles become a feature stores rely on, or if the phase-2 boot test shows
+supervisord mishandling status 75 or Hermes' process groups.
+
+**Docker as the supervisor: one compose service per program.** Same image, shared volumes,
+`restart: always`, a health check and log stream per service. Rejected because the manifest could
+no longer choose services -- compose services are fixed in the store's compose file -- and an update
+in one container would have to restart programs in others, which needs the Docker socket inside a
+container the agent runs in.
 
 **Let each harness self-update in place.** Least code. Rejected because a pin cannot be honoured
 and nothing can report what is installed; `harness-install` keeps one writer.
@@ -328,7 +366,8 @@ packages, that is a platform image change, reviewed.
   no build.
 - A bad upstream release reaches stores the morning after it ships, without a CI gate. The smoke
   test and per-tool rollback bound it; Hermes' bound is a restore.
-- The platform owns s6 and the UID remap, which upstream used to own.
+- The platform owns supervision and the UID remap, which upstream used to own, and Hermes' own
+  profile-gateway management (runtime registration, stay-stopped across reboots) is given up.
 - First boot on an empty harnesses volume downloads every harness (Hermes' installer alone fetches
   Python, node and Chromium). It needs network, and takes minutes.
 
@@ -355,8 +394,12 @@ Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zi
 1. **Platform image + `harness-install`, CLIs only.** Build `contexture-runtime` without Hermes,
    with the recipes for claude, codex, agy, agent-browser and cb, and boot-test it in CI with an
    empty harnesses volume. Not yet deployed.
-2. **Hermes and the WebUI as harnesses.** Recipes, cont-init replacements, the platform venv. CI boots a container, installs Hermes, starts the gateway, runs `hermes backup`
-   and `hermes import`.
+2. **Hermes and the WebUI as harnesses.** Recipes, the entrypoint, the platform venv. CI boots a
+   container, installs Hermes, starts the gateway under supervisord, runs `hermes update` and
+   checks the gateway came back on the new code (status 75 relaunch), restarts the dashboard and
+   WebUI, and runs `hermes backup` and `hermes import`. `lib/tests/harness-remote-container-test.py`
+   moves from real s6-overlay to real supervisord: privilege drop, HOME and cwd, failure health,
+   one program restarting without the others, and a FATAL program failing the healthcheck.
 3. **Migrate** one store (pkm-leilei first, the smallest), then the rest. Retire
    `watch-agent-clis.yml` and stop building `contexture-hermes`.
 
@@ -366,16 +409,17 @@ Each was open in the first draft; all were checked against Hermes at `e29c42a` (
 
 1. **SQLite.** Hermes' interpreter carries 3.53.1 built in, and nothing on the platform opens a
    live database, so no SQLite is shipped. See SQLite above.
-2. **Gateway restarts under s6.** Hermes' s6 backend is generic (PID-1 probe), so `hermes update`
-   restarts its slots itself (and under another supervisor, `--external-supervisor` would do the
-   same). It does not restart the dashboard or WebUI under any supervisor; `harness-install` does. The only constraint is that the update runs inside the agents
-   container, which is why `harness-update` is an s6 service there.
-3. **Profile reconciliation.** `hermes_cli.container_boot` reads `HERMES_HOME` and the scandir from
-   the environment and is called from our cont-init unchanged.
+2. **Gateway restarts without s6.** `hermes gateway run --external-supervisor` exits 75 on a
+   restart or update for any supervisor to relaunch. `hermes update` does not restart the
+   dashboard or WebUI under any supervisor; `harness-install` does. The update runs inside the
+   agents container, which is why `harness-update` is a supervised program there.
+3. **Profiles.** Not in use (every store runs the default profile since 2026-10-23); one gateway
+   program per profile directory covers them if they return. See Alternatives, "Keep s6-overlay".
 4. **claude's install location.** `HOME=<dir> install.sh <version>` plus a symlink, as
    `install-agent-clis.sh` already does in production.
 5. **Hermes extras.** Prepared on first use and carried across updates; nothing to prebuild.
 
 Still unknown, and only answerable by running it (phase 2's CI boot test): how long a cold Hermes
 install takes on an empty volume, and whether `stage2-hook.sh`'s first-boot seeding has a step
-`hermes update` does not repeat that our stores depend on.
+`hermes update` does not repeat that our stores depend on, and whether anything in Hermes beyond the gateway --
+the dashboard's gateway controls, `hermes doctor` -- misbehaves when it finds no service manager.
