@@ -31,7 +31,7 @@ from a manifest, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
-| Platform | Debian, `tini`, supervisord, the boot entrypoint (`hermes` user + UID remap), node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own programs (`harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
+| Platform | Debian, `tini`, supervisord, the boot entrypoint (`agent` user + UID remap), node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own programs (`harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes, the Hermes WebUI, claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
 | State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
 
@@ -142,7 +142,7 @@ was added or pinned. The volume itself is in neither backup.
   which only reach the container they run in. Per tool: update to the newest version the manifest
   allows, run its smoke test (`--version`), and on failure put the previous version back. One log
   line per tool, one status file (`/opt/data/.harness-status.json`, like `.backup-status.json`).
-- **By hand**, `docker exec -u hermes <container> harness-install --update [name]`.
+- **By hand**, `docker exec -u agent <container> harness-install --update [name]`.
 
 The harnesses' own auto-updaters are **turned off** (`DISABLE_AUTOUPDATER=1` for claude and the
 equivalents for the others). Several writers on one folder means nobody can say what is installed or
@@ -219,11 +219,11 @@ One container, the same as today, with nothing in it running as root once it has
 
 1. **PID 1 is `tini`**, which forwards signals and reaps orphans -- remote sessions and Hermes'
    tools spawn grandchildren that outlive their parents.
-2. **The entrypoint, as root,** applies `PUID`/`PGID` to the `hermes` user (`usermod`/`groupmod`
+2. **The entrypoint, as root,** applies `PUID`/`PGID` to the `agent` user (`usermod`/`groupmod`
    and targeted chowns, as upstream's `stage2-hook.sh` does), generates `API_SERVER_KEY` if absent,
-   then drops to `hermes` with `setpriv` for everything after.
+   then drops to `agent` with `setpriv` for everything after.
 3. **`harness-install`** installs and renders the program list (Installing and updating).
-4. **`exec supervisord`**, as `hermes`, with the generated config: one program per selected
+4. **`exec supervisord`**, as `agent`, with the generated config: one program per selected
    service plus the platform's own two, `harness-update` (long-running) and `store-update` (runs
    once at start, `autorestart=false`, never fails the boot -- the s6 `finish` exit 125 it replaces).
 
@@ -237,6 +237,48 @@ and the healthcheck reports a FATAL program, so a crash loop is visible rather t
 
 The one-shot compose services (`workspace-init`, `serve`, the backup jobs) override the entrypoint
 as they do today and never start the supervisor.
+
+### The runtime user
+
+The image's one unprivileged user is **`agent`**, uid/gid 10000 by default (`PUID`/`PGID`), with
+home `/opt/data/home`.
+
+**Not `hermes`.** The name was required in exactly two places -- upstream's Docker scripts
+(`main-wrapper.sh`, `stage2-hook.sh`) and Hermes' s6 backend, which writes `s6-setuidgid hermes`
+into each gateway slot -- and this design keeps neither. Hermes' own code does not look the name up.
+With Hermes one harness among several, `hermes` would be the last place the platform names it.
+`agent` is what an operator reads where it is used, `docker exec -u agent pkm-agents ...`, and
+matches the compose service. (`harness` reads oddly as a user; `ctxr` names one tool the user runs,
+not who it is.)
+
+Ownership does not move. Files on the volumes are owned by uid 10000, not by a name, and the
+one-shot compose services already run as `${PUID:-10000}`. A leftover `docker exec -u hermes`
+fails loudly (`unable to find user hermes`), never silently, and `-u 10000` works throughout.
+
+The home directory changes on purpose. Upstream's `hermes` user has home `/opt/data`, which is why
+the README has to say `docker exec -u hermes -e HOME=/opt/data/home` -- without the `-e`, `cb auth
+login` writes its key under `/opt/data`, where the agent never looks. `agent`'s passwd home *is*
+the agent's tool-call home, so a plain `docker exec -u agent` lands where the harnesses read, and
+the `-e HOME=...` lines go. Hermes' own process then runs with `HOME=/opt/data/home` rather than
+`/opt/data`; it takes its state from `HERMES_HOME`, and the phase-2 boot test confirms nothing of
+Hermes' lands under `home/` that used to land at the root.
+
+**Not root.** The case for it is real: no remap, no privilege drop, no permission bugs, and an agent
+could `apt install` what it needs. Rejected:
+
+- `/store` is shared with `serve` and the backup jobs, which run as uid 10000. Root-owned files in it
+  break them -- already seen when a chowned store made `ctxr-provision` die on git's
+  `safe.directory`. Root works only if every container is root, including `serve`, the holder of
+  the approval App key.
+- Root in the agents container can rewrite the platform under itself -- `ctxr`, `harness-install`,
+  the entrypoint -- and `apt install` drift that the next image silently drops. The design keeps
+  the agent out of both.
+- The harnesses refuse or warn: Claude Code refuses `--dangerously-skip-permissions` as root,
+  claude's installer refuses root without `CLAUDE_INSTALL_ALLOW_SUDO`, and Hermes warns that a root
+  gateway leaves root-owned files in `HERMES_HOME`.
+- Without rootless Docker or user namespaces, root in the container is root on the host.
+
+A system package a harness needs is a reviewed platform image change, as before.
 
 ### Rollback
 
@@ -258,7 +300,7 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | Today, from the base | After |
 |---|---|
 | s6-overlay, `/init`, `entrypoint-dispatch.sh` | `tini` + our entrypoint + supervisord (Debian packages); no s6 |
-| `hermes` user, `stage2-hook.sh` UID/GID remap and targeted chowns | our entrypoint, as root, before it drops privileges |
+| `hermes` user (home `/opt/data`), `stage2-hook.sh` UID/GID remap and targeted chowns | the `agent` user (home `/opt/data/home`), remapped by our entrypoint as root before it drops privileges (see The runtime user) |
 | First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our entrypoint |
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
 | `02-reconcile-profiles` (`hermes_cli.container_boot`), `015-supervise-perms` | gone: `harness-install` renders a gateway program per profile instead. Lost with it: a gateway an operator stopped stays stopped across a reboot (`desired_state`); here every selected gateway starts |
@@ -388,6 +430,20 @@ counted first:
    `/opt/data/.harness-status.json` and every selected service's slot (`harness-install status`).
 
 Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zip from step 1.
+
+The user rename touches documentation, not ownership. In this repository: the README's four
+`docker exec -u hermes` lines (and their `-e HOME=/opt/data/home`) and a comment in
+`harness-backup.sh`; the s6 `run` files that also name it are deleted by this design. In the stores, as of
+2026-10-24 -- prose and comments only, nothing that executes -- for each store's owner to update
+with its migration:
+
+| Store | File |
+|---|---|
+| pkm | `.docker/README.md` |
+| pkm | `.agents/skills/agent-browser-routing/SKILL.md` |
+| readyrun-brain | `.docker/README.md` |
+| readyrun-brain | `.docker/docker-compose.yml` (a comment) |
+| pkm-leilei | `.docker/README.md` |
 
 ## Phasing
 
