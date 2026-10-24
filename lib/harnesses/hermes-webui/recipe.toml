@@ -10,6 +10,7 @@ restart_with = ["hermes"]
 
 [services.hermes-webui]
 command = ["hermes-webui"]
+probe = "http://127.0.0.1:${HERMES_WEBUI_PORT:-8787}/"
 environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WEBUI_AGENT_DIR = "${HARNESS_ROOT}/hermes/current/src", HERMES_WEBUI_STATE_DIR = "${HOME}/.hermes-webui" }
 
 # WebUI chat sessions, from hermes-config.gitignore's webui/ rules.

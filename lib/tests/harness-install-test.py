@@ -208,6 +208,19 @@ class HarnessInstall(unittest.TestCase):
         self.assertIn('[group:runtime]\nprograms=store-update,harness-update,gamma-web', conf,
                       'one group, so a shutdown stops every program in parallel')
 
+    def test_defaults_in_recipe_values(self):
+        self.recipe('ported', 'ported', extra='''
+[services.ported-web]
+command = ["ported", "--port", "${PORTED_PORT:-9000}", "--host", "${PORTED_HOST:-}"]
+probe = "http://127.0.0.1:${PORTED_PORT:-9000}/"
+''')
+        self.run_tool(HARNESSES='ported', HARNESS_SERVICES='ported-web')
+        self.assertIn('command=ported --port 9000 --host \'\'', self.programs())
+        self.run_tool(HARNESSES='ported', HARNESS_SERVICES='ported-web', PORTED_PORT='9100')
+        self.assertIn('command=ported --port 9100', self.programs())
+        index = json.loads((self.run_dir / 'programs.json').read_text())
+        self.assertEqual(index['ported-web'], {'owner': 'ported', 'probe': 'http://127.0.0.1:9100/'})
+
     def test_daily_update_can_be_turned_off_but_store_update_always_runs(self):
         self.run_tool(HARNESSES='alpha', CTXR_UPDATE_STORE_ENABLED='0', HARNESS_UPDATE_INTERVAL='0')
         conf = self.programs()

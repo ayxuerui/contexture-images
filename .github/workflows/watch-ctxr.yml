@@ -64,6 +64,8 @@ jobs:
           printf '%s\n' "${{ steps.compare.outputs.latest }}" > CTXR_VERSION
           sed -i -E 's#^(x-image: &image ghcr\.io/ayxuerui/contexture-hermes:)[^[:space:]]+$#\1${{ steps.compare.outputs.latest }}#' \
             harnesses/hermes/compose.yaml
+          sed -i -E 's#^(x-image: &image ghcr\.io/ayxuerui/contexture-runtime:)[^[:space:]]+$#\1${{ steps.compare.outputs.latest }}#' \
+            runtime/compose.yaml
 
       - name: Open a bump PR
         if: steps.compare.outputs.changed == 'true'
@@ -85,7 +87,7 @@ jobs:
             There is no separate tagging step to remember; the tag is written afterwards, as
             a record of what shipped rather than as the thing that causes it.
 
-            **Merging this rolls it out.** Stores that include `harnesses/hermes/compose.yaml`
+            **Merging this rolls it out.** Stores that include `harnesses/hermes/compose.yaml` or `runtime/compose.yaml`
             from `main` pull the new version on their next `up`. Since ctxr 0.10.0 the schema gate
             is both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
             `contexture.yaml` `schema_version` is refused until the migration pull request

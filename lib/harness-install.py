@@ -130,6 +130,9 @@ class Recipe:
                 'command': command,
                 'directory': spec.get('directory', '${HOME}'),
                 'environment': dict(spec.get('environment', {})),
+                # A URL that answers once the program is serving; any HTTP response counts.
+                # supervisord's RUNNING means "up for startsecs", not "listening".
+                'probe': spec.get('probe'),
             }
 
     def script(self, name):
@@ -379,6 +382,8 @@ def expand(value, extra=None):
     environment.setdefault('HOME', str(home()))
     environment['HARNESS_ROOT'] = str(ROOT)
     environment.update(extra or {})
+    # ${NAME:-default}, as a shell has it: the default when NAME is unset or empty.
+    value = re.sub(r'\$\{(\w+):-([^}]*)\}', lambda m: environment.get(m.group(1)) or m.group(2), value)
     return string.Template(value).safe_substitute(environment)
 
 
@@ -426,7 +431,7 @@ def render(recipes, services, offered, installed):
         extra = {'HARNESS_RECIPE_DIR': str(recipes[owner].directory)}
         blocks.append(program_block(program, spec, False, extra))
         rendered.append(program)
-        owners[program] = owner
+        owners[program] = {'owner': owner, 'probe': expand(spec['probe'], extra) if spec.get('probe') else None}
     if rendered:
         blocks.append(f'[group:{GROUP}]\nprograms={",".join(rendered)}\n')
     RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -500,8 +505,8 @@ def converge(update, only=()):
             if supervisor_running():
                 owners = read_owners()
                 for name in changed:
-                    programs = sorted(p for p, owner in owners.items()
-                                      if owner == name or name in recipes[owner].restart_with)
+                    programs = sorted(p for p, entry in owners.items()
+                                      if entry['owner'] == name or name in recipes[entry['owner']].restart_with)
                     if programs:
                         log(f'{name}: restarting {", ".join(programs)}')
                         supervisorctl('restart', *(f'{GROUP}:{p}' for p in programs))
@@ -558,10 +563,13 @@ def status():
             fields = line.split()
             if len(fields) >= 2:
                 states[fields[0].removeprefix(GROUP + ':')] = fields[1]
+    probes = {program: entry.get('probe') for program, entry in read_owners().items()}
     for program in report.get('programs', []):
         state = states.get(program, 'UNKNOWN')
         oneshot = PLATFORM_PROGRAMS.get(program, {}).get('oneshot', False)
         good = state in (('RUNNING', 'STARTING', 'EXITED') if oneshot else ('RUNNING',))
+        if good and probes.get(program) and not serving(probes[program]):
+            state, good = 'RUNNING, not serving yet', False
         print(f'{program}: {state}')
         healthy = healthy and good
     return 0 if healthy else 1
@@ -661,6 +669,24 @@ id_ed25519
 .pbkdf2_key
 /.ssh/
 '''
+
+
+class _NoRedirect(__import__('urllib.request').request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def serving(url):
+    """True when anything answers HTTP at `url`: a 302 to /login or a 401 is serving."""
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.build_opener(_NoRedirect).open(url, timeout=3)
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    return True
 
 
 def main(argv):

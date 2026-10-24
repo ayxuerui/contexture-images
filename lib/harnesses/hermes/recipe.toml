@@ -19,12 +19,15 @@ forward_only = true
 # relaunches it on the new code.
 [services.hermes-gateway]
 command = ["hermes", "gateway", "run", "--replace", "--external-supervisor"]
+# Its API server, which compose enables (the WebUI's health pill and cron fires use it).
+probe = "http://127.0.0.1:${API_SERVER_PORT:-8642}/"
 environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WRITE_SAFE_ROOT = "${HOME}:${CONTEXTURE_STORE_ROOT}:/tmp" }
 
 # The dashboard. Host and port come from compose (HERMES_DASHBOARD_HOST/PORT), defaulting to
 # loopback: Hermes refuses a non-loopback bind without dashboard auth in config.yaml.
 [services.hermes-dashboard]
 command = ["${HARNESS_RECIPE_DIR}/run-dashboard"]
+probe = "http://127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}/"
 environment = { HERMES_HOME = "${HOME}/.hermes" }
 
 # `hermes backup` copies every database with sqlite3.backup() -- consistent under a live writer,

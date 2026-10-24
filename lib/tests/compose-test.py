@@ -122,5 +122,95 @@ volumes:
         self.assertEqual(model['volumes']['store']['name'], 'pkm_store')
 
 
+RUNTIME = ROOT / 'runtime' / 'compose.yaml'
+
+
+class Runtime(unittest.TestCase):
+    """runtime/compose.yaml, the successor stores move to one at a time."""
+
+    def render(self, *args, env=REQUIRED):
+        result = config(RUNTIME.parent, '-f', RUNTIME.name, *args, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def everything(self):
+        return self.render('--profile', 'init', '--profile', 'backup', '--profile', 'migrate')
+
+    def test_version_matches_ctxr_version(self):
+        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+        pinned = re.findall(r'^x-image: &image ghcr\.io/ayxuerui/contexture-runtime:(\S+)$', RUNTIME.read_text(), re.M)
+        self.assertEqual(pinned, [version])
+
+    def test_every_service_pulls_the_version_tag(self):
+        model = self.everything()
+        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+        self.assertEqual({s['image'] for s in model['services'].values()},
+                         {f'ghcr.io/ayxuerui/contexture-runtime:{version}'})
+        self.assertEqual({s.get('pull_policy') for s in model['services'].values()}, {'always'})
+
+    def test_portable(self):
+        for name, service in self.everything()['services'].items():
+            with self.subTest(service=name):
+                self.assertNotIn('ports', service)
+                self.assertNotIn('container_name', service)
+                self.assertTrue(all(mount['type'] == 'volume' for mount in service.get('volumes', [])))
+
+    def test_agents_keep_the_image_entrypoint_and_select_by_variable(self):
+        agents = self.render()['services']['agents']
+        self.assertIsNone(agents.get('entrypoint'))  # tini + the runtime entrypoint
+        self.assertIsNone(agents.get('command'))
+        env = agents['environment']
+        self.assertEqual(env['HARNESSES'], 'hermes,hermes-webui,claude,codex,agy,agent-browser,cb')
+        self.assertEqual(env['HARNESS_SERVICES'], 'hermes-gateway,hermes-dashboard,hermes-webui')
+        self.assertEqual(env['HARNESS_PINS'], '')
+        for retired in ('HERMES_DASHBOARD', 'HERMES_WEBUI_ENABLED', 'HARNESS_REMOTE_AGENTS', 'HERMES_HOME'):
+            self.assertNotIn(retired, env)
+        mounts = {m['target']: m['source'] for m in agents['volumes']}
+        self.assertEqual(mounts, {'/home/agent': 'home', '/opt/harnesses': 'harnesses', '/store': 'store'})
+
+    def test_the_selection_reaches_the_backup_jobs(self):
+        model = self.everything()
+        for name in ('harness-backup', 'harness-config-push', 'harness-backup-cron', 'harness-config-cron'):
+            with self.subTest(service=name):
+                service = model['services'][name]
+                self.assertEqual(service['environment']['HARNESSES'], model['services']['agents']['environment']['HARNESSES'])
+                harnesses = [m for m in service['volumes'] if m['source'] == 'harnesses']
+                self.assertEqual(len(harnesses), 1)
+                self.assertTrue(harnesses[0].get('read_only'), 'the backup jobs never install')
+
+    def test_serve_never_sees_the_home_or_the_harnesses(self):
+        model = self.render()
+        sources = {m['source'] for m in model['services']['serve']['volumes']}
+        self.assertEqual(sources, {'store'})
+        agents = model['services']['agents']
+        self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
+        self.assertNotIn('secrets', agents)
+
+    def test_a_store_moves_by_renaming_the_volume_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Path(temporary)
+            (store / 'compose.yaml').write_text(f'''name: pkm-leilei
+include:
+  - {RUNTIME}
+services:
+  agents:
+    container_name: pkm-leilei-agents
+volumes:
+  home:
+    name: pkm-leilei_data
+    external: true
+''')
+            (store / '.env').write_text(''.join(f'{k}={v}\n' for k, v in REQUIRED.items()) +
+                                        'HARNESS_SERVICES=hermes-gateway,hermes-webui,claude-remote\n')
+            result = config(store)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            model = json.loads(result.stdout)
+        self.assertEqual(model['volumes']['home'], {'name': 'pkm-leilei_data', 'external': True})
+        self.assertEqual(model['volumes']['harnesses']['name'], 'pkm-leilei_harnesses')
+        self.assertEqual(model['services']['agents']['environment']['HARNESS_SERVICES'],
+                         'hermes-gateway,hermes-webui,claude-remote')
+        self.assertNotIn('data', model['volumes'])
+
+
 if __name__ == '__main__':
     unittest.main()
