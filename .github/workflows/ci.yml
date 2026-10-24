@@ -99,6 +99,9 @@ jobs:
       # The in-place move of a Hermes-image volume into a runtime home, and its reverse.
       - name: Test harness-migrate-home
         run: python3 -B lib/tests/migrate-home-test.py
+      # Which `hermes backup` exits the Hermes recipe's snapshot accepts.
+      - name: Test the Hermes snapshot
+        run: python3 -B lib/tests/hermes-snapshot-test.py
 
   # The runtime image (docs/design/harnesses-in-home.md, phase 1). Built and tested, never pushed:
   # release.yml does not publish it until the stores move to it.
