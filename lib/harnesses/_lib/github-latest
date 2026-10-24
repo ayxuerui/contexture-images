@@ -1,0 +1,8 @@
+#!/bin/sh
+# Print the newest published release of a GitHub repository, without its leading `v`. The
+# releases/latest endpoint skips drafts and prereleases, which is the `stable` channel for the
+# projects that use it (Hermes, the Hermes WebUI, whose `exp-` builds are prereleases).
+set -eu
+[ "$#" -eq 1 ] || { echo "github-latest: usage: github-latest OWNER/REPO" >&2; exit 2; }
+curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$1/releases/latest" \
+  | python3 -c 'import json, sys; tag = json.load(sys.stdin)["tag_name"]; print(tag[1:] if tag.startswith("v") else tag)'

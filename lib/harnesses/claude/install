@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+: "${HARNESS_PREFIX:?HARNESS_PREFIX is required}"
+: "${HARNESS_VERSION:?HARNESS_VERSION is required}"
+installer="$(mktemp)"
+trap 'rm -f "${installer}"' EXIT
+"$(dirname "$0")/../_lib/fetch-installer" https://claude.ai/install.sh "${installer}"
+mkdir -p "${HARNESS_PREFIX}/home" "${HARNESS_PREFIX}/bin"
+HOME="${HARNESS_PREFIX}/home" bash "${installer}" "${HARNESS_VERSION}"
+ln -s ../home/.local/bin/claude "${HARNESS_PREFIX}/bin/claude"

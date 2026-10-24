@@ -1,0 +1,14 @@
+# OpenAI's Codex CLI, from npm (@openai/codex).
+binaries = ["codex"]
+rebuild_on = ["node-major"]
+
+# Codex remote control, run through harness-remote as today. harness-remote insists on the
+# foreground `--no-daemon` form: a background launcher would make a dead service look healthy.
+[services.codex-remote]
+command = ["python3", "/usr/local/bin/harness-remote", "run", "codex"]
+environment = { HARNESS_REMOTE_AGENTS = "codex", HARNESS_REMOTE_HOME = "${HOME}" }
+
+# Chat history, for the config repository (hermes-config.gitignore's home/.codex/sessions/ rule).
+[config]
+root = ".codex"
+rules = "!/sessions/"

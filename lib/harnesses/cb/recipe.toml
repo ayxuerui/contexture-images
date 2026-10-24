@@ -1,0 +1,4 @@
+# Circleback's CLI (`cb`), from npm (@circleback/cli). Inert until `cb auth login`, which writes
+# under the agent's home -- with home at /home/agent, a plain `docker exec -u agent` lands there.
+binaries = ["cb"]
+rebuild_on = ["node-major"]

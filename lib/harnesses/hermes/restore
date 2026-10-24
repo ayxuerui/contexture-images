@@ -1,0 +1,7 @@
+#!/bin/sh
+# Restore ~/.hermes from a snapshot directory written by `snapshot`. Run with the agents stopped:
+# `hermes import` writes into the live databases.
+set -eu
+archive="$1/hermes.zip"
+[ -f "${archive}" ] || { echo "hermes: no ${archive} to restore"; exit 0; }
+HERMES_HOME="${HOME}/.hermes" exec hermes import --force "${archive}"

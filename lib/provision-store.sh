@@ -15,6 +15,7 @@
 # Optional:
 #   STORE_DIR                     store checkout       (default /store)
 #   HERMES_DATA_DIR               agent data volume    (default /opt/data)
+#   HARNESS_AGENT_HOME            the agent's HOME     (default $HERMES_DATA_DIR/home)
 #   PUID / PGID                   runtime uid/gid      (default 10000)
 #   CTXR_PROFILE                  taxonomy for a FRESH store only (default para)
 #   HERMES_SKILLS_EXTERNAL_DIRS   JSON array for `hermes config set skills.external_dirs`
@@ -50,7 +51,8 @@ log() { echo "[ctxr-provision] $*"; }
 # therefore found by the long-running gateway's subprocesses without GH_TOKEN ever being in
 # their environment -- which is the point, since passing it through would expose the token to
 # every shell command the agent runs.
-export HOME="$HERMES_DATA/home"
+# The runtime image's agent home is the volume itself (/home/agent), not a directory in HERMES_HOME.
+export HOME="${HARNESS_AGENT_HOME:-$HERMES_DATA/home}"
 mkdir -p "$HOME"
 
 git config --global user.name "$GIT_USER_NAME"

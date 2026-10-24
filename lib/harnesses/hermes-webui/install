@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+: "${HARNESS_PREFIX:?HARNESS_PREFIX is required}"
+: "${HARNESS_VERSION:?HARNESS_VERSION is required}"
+mkdir -p "${HARNESS_PREFIX}/src" "${HARNESS_PREFIX}/bin"
+curl -fsSL --retry 3 "https://github.com/nesquena/hermes-webui/archive/refs/tags/v${HARNESS_VERSION}.tar.gz" \
+  | tar -xz -C "${HARNESS_PREFIX}/src" --strip-components=1
+test -f "${HARNESS_PREFIX}/src/server.py"
+cat > "${HARNESS_PREFIX}/bin/hermes-webui" <<LAUNCHER
+#!/bin/sh
+[ "\${1:-}" != --version ] || { echo ${HARNESS_VERSION}; exit 0; }
+cd "\$(dirname "\$(readlink -f "\$0")")/../src" && exec python3 server.py "\$@"
+LAUNCHER
+chmod +x "${HARNESS_PREFIX}/bin/hermes-webui"

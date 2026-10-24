@@ -30,6 +30,10 @@
 #                                  shape, so the only honest test is "does the image ship it".
 #                                  Absent or empty = nothing under skills/ is excluded.
 #                                  (default /opt/hermes/skills)
+#   HARNESS_CONFIG_BUNDLED_SKILLS_PREFIX
+#                                  where that bundle's skills sit in the repository (default skills;
+#                                  .hermes/skills in the runtime image, whose repository is the home)
+#   HARNESS_CONFIG_HOME            HOME for gh's credential   (default $HERMES_DATA_DIR/home)
 #   HARNESS_CONFIG_GITIGNORE_SRC   allowlist to render from
 #                                  (default /usr/local/share/contexture/hermes-config.gitignore)
 #   HARNESS_CONFIG_INCLUDE         extra allowlist entries, whitespace-separated. Nested paths
@@ -72,7 +76,9 @@ log() { echo "[harness-config-push] $*"; }
 # The agent's own HOME, and where ctxr-provision put the gh credential and ~/.gitconfig. Both
 # are needed: the credential to push, the gitconfig for the `gh auth git-credential` helper and
 # the commit identity.
-export HOME="$HERMES_DATA/home"
+# Where gh's credential is: the agent's tool-call home. In the Hermes image that is a directory
+# inside the repository; in the runtime image the home IS the repository (HARNESS_CONFIG_HOME).
+export HOME="${HARNESS_CONFIG_HOME:-$HERMES_DATA/home}"
 
 # Every git call carries safe.directory for this one path. Not defensive -- `git -C /opt/data
 # rev-parse HEAD` as root against a 10000-owned volume fails with "detected dubious ownership"
@@ -266,7 +272,7 @@ ${_acc}/*
       [ -e "$_b" ] || continue
       _bn="${_b##*/}"
       case "$_bn" in .*) continue ;; esac
-      _bundled="${_bundled}skills/${_bn}
+      _bundled="${_bundled}${HARNESS_CONFIG_BUNDLED_SKILLS_PREFIX:-skills}/${_bn}
 "
     done
   else

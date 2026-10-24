@@ -1,0 +1,28 @@
+# The Hermes WebUI (nesquena/hermes-webui), from its release source.
+#
+# It runs Hermes' agent in-process. Started with the platform's python3 and HERMES_WEBUI_AGENT_DIR
+# set to Hermes' checkout, it imports Hermes' bootstrap and relaunches itself inside Hermes'
+# managed runtime -- checked against Hermes 0.22.5 and WebUI 0.52.492 -- so it needs no venv of its
+# own. That is also why a Hermes update restarts it (`restart_with`).
+binaries = ["hermes-webui"]
+requires = ["hermes"]
+restart_with = ["hermes"]
+
+[services.hermes-webui]
+command = ["hermes-webui"]
+probe = "http://127.0.0.1:${HERMES_WEBUI_PORT:-8787}/"
+environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WEBUI_AGENT_DIR = "${HARNESS_ROOT}/hermes/current/src", HERMES_WEBUI_STATE_DIR = "${HOME}/.hermes-webui" }
+
+# WebUI chat sessions, from hermes-config.gitignore's webui/ rules.
+[config]
+root = ".hermes-webui"
+rules = """
+!/sessions/
+!/attachments/
+sessions/*
+!sessions/*.json
+sessions/_index.json
+sessions/_run_journal/
+sessions/_turn_journal/
+sessions/*.bak*
+"""

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec npm view @openai/codex version
