@@ -33,10 +33,40 @@ from a manifest, and upgrades without an image release.
 |---|---|---|---|
 | Platform | Debian, `tini`, supervisord, the boot entrypoint (`agent` user + UID remap), node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own programs (`harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes, the Hermes WebUI, claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
-| State | `HERMES_HOME`, `HOME`, credentials, sessions, the manifest | `data` volume at `/opt/data`, as today | n/a |
+| State | the agent's home: each harness's own state (`~/.hermes`, `~/.claude`, `~/.codex`, ...), credentials, sessions, the manifest | `home` volume at `/home/agent` (see Home is the volume) | n/a |
 
 The image tag stays the ctxr version, and merging a ctxr bump stays the rollout. That is the one
 pin whose drift has repeatedly broken deployments, and `serve` and `store-update` run it.
+
+### Home is the volume
+
+Today the agent's home lives inside Hermes' state: the volume is `HERMES_HOME=/opt/data`, and
+`HOME=/opt/data/home` is a directory in it. That is upstream's Docker layout, and it puts one
+harness at the root of everyone's state. With Hermes one harness among several, it is inverted:
+the volume **is** the agent's home, and every harness keeps its state where it does by default.
+
+```
+/home/agent/                         the `home` volume (today: `data`, at /opt/data)
+  .hermes/                           Hermes' HERMES_HOME -- upstream's own non-Docker default
+  .hermes-webui/                     WebUI state (today /opt/data/webui)
+  .claude/  .claude.json  .codex/    as each harness defaults; a new one (gemini) adds its own
+  .config/gh/  .config/circleback/   credentials, as today under home/
+  .config/contexture/harnesses.yaml  the manifest
+  .config/contexture/restic-password harness-backup's repository password
+  .local/state/contexture/           harness-status.json, backup-status.json
+```
+
+Three things follow. Hermes lands on the layout its source installer creates (`~/.hermes`, code
+elsewhere via `--dir`), so nothing about it is Docker-specific any more. The platform sets only
+`HOME`; `HERMES_HOME=$HOME/.hermes` and `HERMES_WRITE_SAFE_ROOT=$HOME:/store:/tmp` are the Hermes
+recipe's environment for its programs, not compose's. And `docker exec -u agent` with no `-e HOME`
+lands where every harness reads.
+
+The compose volume key becomes `home`, mounted at `/home/agent` in every service that mounts
+`/opt/data` today. A store that maps the key to an existing volume renames the key and keeps the
+name (`home: {name: pkm_pkm-data, external: true}`). **A store that does not map it -- pkm-leilei
+today -- must add that mapping first** (`name: pkm-leilei_data`); otherwise Compose creates an empty
+`pkm-leilei_home` and the agent boots with no logins.
 
 ### The harnesses volume
 
@@ -49,17 +79,16 @@ pin whose drift has repeatedly broken deployments, and `serve` and `store-update
   .installed.json       what harness-install last put here: name, version, source, time
 ```
 
-A separate volume rather than a directory under `/opt/data`, because it is a **cache**:
+A separate volume rather than a directory in the home (`~/.local/share/harnesses`), because it is a **cache**:
 
-- `hermes backup` archives all of `HERMES_HOME`. It already skips its own `hermes-agent/`,
-  `installs/`, `tools/`, `cache/`, venvs and `node_modules`, but a new `/opt/data/harnesses/` would
-  ride along in every snapshot -- hundreds of MB of architecture-bound binaries, several times a
-  day.
+- The home is what `harness-backup` snapshots. Inside it, hundreds of MB of architecture-bound
+  binaries would ride along in every snapshot, several times a day, and be restored onto a host
+  they may not match.
 - `harness-config-push` is an allowlist, so it would ignore the directory either way.
 - A volume can be dropped to force a clean reinstall without touching state:
   `docker compose down && docker volume rm <store>_harnesses && docker compose up -d`.
 
-`harness-backup` calls `hermes backup`, so its containers mount the volume read-only, as do the
+`harness-backup` runs harnesses' own snapshot commands (`hermes backup`), so its containers mount the volume read-only, as do the
 one-shot backup jobs. `serve` and `workspace-init` do not mount it.
 
 It is owned by the runtime uid, so the agent can write it. That is accepted, not overlooked: the
@@ -73,11 +102,11 @@ harnesses volume.
 Upstream's source installer is the only supported install outside Docker (PyPI stopped at 0.19.0
 and is listed as unsupported). Its `--dir` moves the **git checkout** only. Hermes' package manager
 always keeps its pinned Python, the venv generations and its tools under `$HERMES_HOME/tools` and
-`$HERMES_HOME/installs/<key>/` -- inside the `data` volume. `HERMES_RUNTIME_DIR` could move them,
+`$HERMES_HOME/installs/<key>/` -- inside `~/.hermes`, in the home volume. `HERMES_RUNTIME_DIR` could move them,
 but upstream documents it as a process-local development override and its launchers ignore it.
 
 So `/opt/harnesses/hermes/` holds the code, and Hermes' runtime stays where upstream puts it. That
-is fine for backups -- `hermes backup` already excludes `tools/` and `installs/` -- and it is the
+is fine for backups -- `hermes backup` already excludes `tools/` and `installs/`, and the Hermes recipe excludes them from the file-level snapshot too -- and it is the
 only layout `hermes update` maintains. Fighting it would make every Hermes upgrade ours to debug.
 
 Gateway supervision does not need Hermes' own. Hermes picks a service manager by probing for s6
@@ -99,7 +128,7 @@ only `hermes`.
 
 ### The manifest
 
-`/opt/data/harnesses.yaml`, seeded from the image's default on first boot and never overwritten
+`~/.config/contexture/harnesses.yaml`, seeded from the image's default on first boot and never overwritten
 after:
 
 ```yaml
@@ -120,11 +149,11 @@ harness's services run in this container (see Services); a harness with none is 
 
 Each name maps to a recipe shipped in the image, `lib/harnesses/<name>/`: how to install and update
 it, how to read the installed version, where its binary is, which harnesses it needs
-(`hermes-webui` needs `hermes`), and which services it can run. A name with no recipe, or a service
+(`hermes-webui` needs `hermes`), which services it can run, and what of its state is backed up and tracked (see Backups follow the recipes). A name with no recipe, or a service
 its recipe does not offer, fails loudly at boot.
 
-`harness-config-push` adds `harnesses.yaml` to its allowlist, so the config repo shows when a tool
-was added or pinned. The volume itself is in neither backup.
+The platform's own entry in the config allowlist is the manifest, so the config repo shows when a
+tool was added or pinned. The volume itself is in neither backup.
 
 ### Installing and updating
 
@@ -141,7 +170,7 @@ was added or pinned. The volume itself is in neither backup.
   through supervisord's socket, and `hermes update` stops and restarts gateways by PID, both of
   which only reach the container they run in. Per tool: update to the newest version the manifest
   allows, run its smoke test (`--version`), and on failure put the previous version back. One log
-  line per tool, one status file (`/opt/data/.harness-status.json`, like `.backup-status.json`).
+  line per tool, one status file (`~/.local/state/contexture/harness-status.json`, beside `backup-status.json`).
 - **By hand**, `docker exec -u agent <container> harness-install --update [name]`.
 
 The harnesses' own auto-updaters are **turned off** (`DISABLE_AUTOUPDATER=1` for claude and the
@@ -152,7 +181,7 @@ Per-tool recipes:
 
 | Name | Install | Update |
 |---|---|---|
-| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=/opt/data` | `hermes update --yes --backup` (see Rollback); the gateway exits 75 and supervisord relaunches it on the new code, but Hermes leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
+| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=$HOME/.hermes` | `hermes update --yes --backup` (see Rollback); the gateway exits 75 and supervisord relaunches it on the new code, but Hermes leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
 | hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart its `webui` service |
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
@@ -199,7 +228,7 @@ proxy trust (`HERMES_DASHBOARD_PORT`, `HERMES_WEBUI_ALLOWED_ORIGINS`, ...). Thos
 service, not the choice of whether it runs.
 
 **Hermes' `gateway` is one program per profile.** `harness-install` renders `hermes-gateway` for
-the root profile and `hermes-gateway-<name>` for each directory under `$HERMES_HOME/profiles/` with
+the root profile and `hermes-gateway-<name>` for each directory under `~/.hermes/profiles/` with
 a `SOUL.md` -- the marker Hermes' own boot reconciliation uses. Every store runs the default profile
 only today. A profile created at runtime (`hermes profile create`) gets its gateway on the next
 `harness-install --services` or container start, not instantly; and a gateway is stopped with
@@ -241,7 +270,7 @@ as they do today and never start the supervisor.
 ### The runtime user
 
 The image's one unprivileged user is **`agent`**, uid/gid 10000 by default (`PUID`/`PGID`), with
-home `/opt/data/home`.
+home `/home/agent` -- the home volume.
 
 **Not `hermes`.** The name was required in exactly two places -- upstream's Docker scripts
 (`main-wrapper.sh`, `stage2-hook.sh`) and Hermes' s6 backend, which writes `s6-setuidgid hermes`
@@ -257,11 +286,9 @@ fails loudly (`unable to find user hermes`), never silently, and `-u 10000` work
 
 The home directory changes on purpose. Upstream's `hermes` user has home `/opt/data`, which is why
 the README has to say `docker exec -u hermes -e HOME=/opt/data/home` -- without the `-e`, `cb auth
-login` writes its key under `/opt/data`, where the agent never looks. `agent`'s passwd home *is*
-the agent's tool-call home, so a plain `docker exec -u agent` lands where the harnesses read, and
-the `-e HOME=...` lines go. Hermes' own process then runs with `HOME=/opt/data/home` rather than
-`/opt/data`; it takes its state from `HERMES_HOME`, and the phase-2 boot test confirms nothing of
-Hermes' lands under `home/` that used to land at the root.
+login` writes its key under `/opt/data`, where the agent never looks. `agent`'s passwd home is the
+home volume, and every harness's state is under it, so a plain `docker exec -u agent` lands where
+the harnesses read and the `-e HOME=...` lines go.
 
 **Not root.** The case for it is real: no remap, no privilege drop, no permission bugs, and an agent
 could `apt install` what it needs. Rejected:
@@ -300,7 +327,7 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | Today, from the base | After |
 |---|---|
 | s6-overlay, `/init`, `entrypoint-dispatch.sh` | `tini` + our entrypoint + supervisord (Debian packages); no s6 |
-| `hermes` user (home `/opt/data`), `stage2-hook.sh` UID/GID remap and targeted chowns | the `agent` user (home `/opt/data/home`), remapped by our entrypoint as root before it drops privileges (see The runtime user) |
+| `hermes` user (home `/opt/data`), `stage2-hook.sh` UID/GID remap and targeted chowns | the `agent` user (home `/home/agent`), remapped by our entrypoint as root before it drops privileges (see The runtime user) |
 | First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our entrypoint |
 | `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
 | `02-reconcile-profiles` (`hermes_cli.container_boot`), `015-supervise-perms` | gone: `harness-install` renders a gateway program per profile instead. Lost with it: a gateway an operator stopped stays stopped across a reboot (`desired_state`); here every selected gateway starts |
@@ -311,8 +338,46 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | `profile.d/10-hermes-path.sh` | rewritten: `/opt/harnesses/bin:/opt/contexture/venv/bin:...` |
 | Chromium on PATH via the Playwright glob | `agent-browser`'s and Hermes' own browsers; the image keeps only the shared libraries they need |
 
-`HERMES_WRITE_SAFE_ROOT=/opt/data:/store:/tmp` and the `HOME=/opt/data/home` /
-`HERMES_HOME=/opt/data` split are unchanged.
+`HERMES_WRITE_SAFE_ROOT` keeps its meaning -- the agent's own state, the store, and `/tmp` -- as
+`$HOME:/store:/tmp`, set by the Hermes recipe. The `HOME`/`HERMES_HOME` nesting is inverted; see
+Home is the volume.
+
+### Backups follow the recipes
+
+`harness-backup` and `harness-config-push` both know Hermes by name today: one archives through
+`hermes backup`, the other's 277-line-descended allowlist names `SOUL.md`, `sessions/`,
+`home/.claude/projects/` and the rest. Both become generic over the home, and each recipe says
+what of its state they handle:
+
+| Recipe declares | Used by | Hermes' entry |
+|---|---|---|
+| `backup.snapshot`: a command writing a consistent archive of its state, and `backup.restore` | `harness-backup` | `hermes backup -o <file>` / `hermes import <file>` |
+| `backup.exclude`: paths not worth snapshotting | `harness-backup` | `.hermes/{installs,tools,cache}/` |
+| `config`: paths to track for diffing, relative to home | `harness-config-push` | `.hermes/{config.yaml,SOUL.md,memories/,cron/jobs.json,user-skills/,scripts/,sessions/}` |
+
+Other entries, from today's allowlist: `hermes-webui` tracks `.hermes-webui/sessions/*.json`,
+`claude` tracks `.claude/projects/*/*.jsonl`, `codex` tracks `.codex/sessions/`. None of them
+needs a snapshot command; plain files are consistent enough. A harness that keeps a live SQLite
+database declares a snapshot command, as Hermes does.
+
+**`harness-backup`** snapshots the whole home to restic -- it stays the recovery copy, credentials
+included, and the default is everything, because home also holds what belongs to no harness (`gh`,
+Circleback, `.gitconfig`, `.ssh`). For each installed harness with `backup.snapshot` it writes that
+archive to staging and leaves the harness's own directory out of the file-level pass, so a live
+database is never copied torn; then one restic run takes the staging archives plus the rest of the
+home, minus every recipe's `backup.exclude`. Restore is `restic restore`, then each restored
+archive's `backup.restore`. The `hermes backup` reasoning in today's script -- `sqlite3.backup()`,
+no WAL sidecars, no foreign `gateway_state.json` -- is unchanged; it just moves into Hermes' recipe.
+
+**`harness-config-push`** renders its allowlist from the manifest's harnesses' `config` entries plus
+the manifest itself, and still takes `HARNESS_CONFIG_INCLUDE`/`EXCLUDE` for a store's own additions.
+It stays an allowlist: a new harness's state is invisible until its recipe names it. The
+bundled-skill test (`HARNESS_CONFIG_BUNDLED_SKILLS_DIR`) becomes part of Hermes' `config` entry,
+pointing at `/opt/harnesses/hermes/skills`.
+
+The config repository's paths change with the home (`config.yaml` becomes `.hermes/config.yaml`,
+`home/.claude/...` becomes `.claude/...`). The migration commits that as one `git mv`, so
+`git log --follow` keeps each file's history.
 
 ### SQLite
 
@@ -394,8 +459,14 @@ and nothing can report what is installed; `harness-install` keeps one writer.
 **Let `ctxr update` install harnesses.** Rejected outright. contexture core is harness-neutral and
 never references these images; making ctxr a harness package manager breaks both.
 
-**Put the harness folder under `/opt/data`.** One volume fewer. Rejected because `hermes backup`
-would archive it into every snapshot, and a reinstall could no longer be a volume drop.
+**Put the harness folder in the home.** One volume fewer. Rejected because `harness-backup` would
+snapshot it every time, and a reinstall could no longer be a volume drop.
+
+**Keep Hermes' layout for the home** (`HOME` inside `HERMES_HOME`). No volume migration at all,
+which is the strongest reason to keep it: the move below is the riskiest step of this design.
+Rejected because it is the one place the platform would still be shaped around Hermes, every
+other harness's state would keep living inside Hermes', and `docker exec` would keep needing
+`-e HOME`.
 
 **Use the container as a full VM (apt as the agent, sudo).** Rejected: root for the agent, and
 drift between whatever was apt-installed and the next image. If a harness ever needs system
@@ -410,6 +481,9 @@ packages, that is a platform image change, reviewed.
   test and per-tool rollback bound it; Hermes' bound is a restore.
 - The platform owns supervision and the UID remap, which upstream used to own, and Hermes' own
   profile-gateway management (runtime registration, stay-stopped across reboots) is given up.
+- Every store's state is moved in place once (`harness-migrate-home`). It is renames on one
+  filesystem with the agents stopped, reversible, and rehearsed on a copy first, but it is the
+  riskiest step here, and paths inside conversation histories keep pointing at the old layout.
 - First boot on an empty harnesses volume downloads every harness (Hermes' installer alone fetches
   Python, node and Chromium). It needs network, and takes minutes.
 
@@ -418,24 +492,46 @@ packages, that is a platform image change, reviewed.
 pkm, pkm-leilei and readyrun-brain run on this host. Per store, one at a time, with live sessions
 counted first:
 
-1. `harness-backup` (the restic snapshot) and a `hermes backup` zip kept aside. The new Hermes will
-   be ≥ 0.22.x and write `state.db`; the old image cannot open it afterwards, so this zip is the
-   rollback.
-2. Delete `/opt/data/.install_method` if it reads `docker`; `hermes update` refuses to run on a
-   Docker-stamped home inside a container.
-3. Merge the compose change (new image name, `harnesses` volume, new services). Stores include the
-   compose file from `main`, so the merge is the rollout -- as for a ctxr bump, wait for the
-   release before `up`.
-4. `docker compose up -d`; `harness-install` populates the volume. Check
-   `/opt/data/.harness-status.json` and every selected service's slot (`harness-install status`).
+1. `docker compose stop agents`, so nothing writes the volume. Take `harness-backup` (the restic
+   snapshot) and a `hermes backup` zip kept aside. The new Hermes will be ≥ 0.22.x and write
+   `state.db`; the old image cannot open it afterwards, so this zip is the rollback.
+2. **Move the home into place**, with `harness-migrate-home`, a one-shot on the new image that
+   mounts the volume and refuses to run twice (a layout marker in `.local/state/contexture/`):
+   - every root entry except `home/` moves into `.hermes/`; then `home/`'s contents, dotfiles
+     included, move to the root. Both are renames on one filesystem, so a database moves with its
+     WAL and nothing is copied. A name that would collide (a stray `home/.hermes`, say) stops it
+     before anything moves, with the list.
+   - absolute paths in configuration are rewritten, `/opt/data/home` to `/home/agent` first, then
+     `/opt/data` to `/home/agent/.hermes`: Hermes' `config.yaml`, `.env`, profile files and
+     `cron/jobs.json`, `.claude.json` and `.claude/settings.json`, `.codex/config.toml`,
+     `.gitconfig`. It prints every file it changed and keeps each original beside it. Conversation
+     histories (`sessions/`, `*.jsonl`, `state.db`) are left as written: they record where things
+     were.
+   - `.hermes/.install_method` is deleted if it reads `docker`; `hermes update` refuses to run on a
+     Docker-stamped home inside a container.
+   - `harness-migrate-home --reverse` puts the old layout back, for the rollback below.
+3. In the config repository, one `git mv` commit to the new paths.
+4. Merge the store's compose change: the volume key `data` to `home`, keeping its `name:` (and
+   adding one where the store had none -- pkm-leilei), plus the image and the `harnesses`
+   volume. Stores include the shared compose file from `main`, so the contexture-images merge is
+   the rollout -- as for a ctxr bump, wait for the release before `up`.
+5. `docker compose up -d`; `harness-install` populates the harnesses volume. Check
+   `~/.local/state/contexture/harness-status.json`, `hermes doctor`, and every selected program
+   (`harness-install status`).
 
-Rollback: compose back to `contexture-hermes:<last tag>`, `hermes import` the zip from step 1.
+Step 2 is rehearsed first on a copy of pkm-leilei's volume, never on the live one.
+
+Rollback: `harness-migrate-home --reverse`, compose back to `contexture-hermes:<last tag>`, then
+`hermes import` the zip from step 1 (the new Hermes may already have written `state.db`).
 
 The user rename touches documentation, not ownership. In this repository: the README's four
-`docker exec -u hermes` lines (and their `-e HOME=/opt/data/home`) and a comment in
+`docker exec -u hermes` lines (and their `-e HOME=/opt/data/home`), the `/opt/data` paths the
+README and scripts name (`config-push.sh`, `provision-store.sh`, `install-circleback-script.sh`,
+`harness-remote.py`, the compose file), and a comment in
 `harness-backup.sh`; the s6 `run` files that also name it are deleted by this design. In the stores, as of
-2026-10-24 -- prose and comments only, nothing that executes -- for each store's owner to update
-with its migration:
+2026-10-24, for each store's owner to update with its migration -- the user name in prose and
+comments only, plus each store's own `/opt/data` paths (pkm's compose comment on
+`/opt/data/config.yaml`, readyrun-brain's on `/opt/data/home`) and the volume key:
 
 | Store | File |
 |---|---|
@@ -456,7 +552,12 @@ with its migration:
    WebUI, and runs `hermes backup` and `hermes import`. `lib/tests/harness-remote-container-test.py`
    moves from real s6-overlay to real supervisord: privilege drop, HOME and cwd, failure health,
    one program restarting without the others, and a FATAL program failing the healthcheck.
-3. **Migrate** one store (pkm-leilei first, the smallest), then the rest. Retire
+   `harness-backup` and `harness-config-push` run from recipes: a snapshot of a home holding
+   Hermes and claude state restores to a working Hermes (`hermes import`) and intact `.claude/`,
+   and the rendered allowlist tracks exactly today's set of files under their new paths.
+   `harness-migrate-home` runs forward and `--reverse` against a fixture in the old layout.
+3. **Migrate** one store (pkm-leilei first, the smallest, after rehearsing `harness-migrate-home`
+   on a copy of its volume), then the rest. Retire
    `watch-agent-clis.yml` and stop building `contexture-hermes`.
 
 ## Questions settled before writing this
