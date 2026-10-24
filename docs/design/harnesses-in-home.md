@@ -27,13 +27,13 @@ for ~20 people the image becomes the union of everything anyone wants.
 The image stops being a Hermes image. It becomes the **contexture platform**: everything that must
 match across containers, needs root, or is run by something other than the agent. Every
 **harness** -- Hermes included -- is installed into one folder on its own volume, side by side,
-from a manifest, and upgrades without an image release.
+chosen in compose, and upgrades without an image release.
 
 | Layer | Contents | Lives in | Upgrades by |
 |---|---|---|---|
 | Platform | Debian, `tini`, supervisord, the boot entrypoint (`agent` user + UID remap), node, Debian's python3 and a platform venv on it (skill libs, `harness-remote`), Chromium's shared libraries, ctxr, gh, restic, rclone, pandoc, jq, every `ctxr-*`/`harness-*` script, and only the platform's own programs (`harness-update`, `store-update`) | the image | image release, as today (`watch-ctxr.yml`) |
 | Harnesses | Hermes, the Hermes WebUI, claude, codex, agy, agent-browser, cb, anything added later | `harnesses` volume at `/opt/harnesses/<name>/` | `harness-install --update`, on a schedule |
-| State | the agent's home: each harness's own state (`~/.hermes`, `~/.claude`, `~/.codex`, ...), credentials, sessions, the manifest | `home` volume at `/home/agent` (see Home is the volume) | n/a |
+| State | the agent's home: each harness's own state (`~/.hermes`, `~/.claude`, `~/.codex`, ...), credentials, sessions | `home` volume at `/home/agent` (see Home is the volume) | n/a |
 
 The image tag stays the ctxr version, and merging a ctxr bump stays the rollout. That is the one
 pin whose drift has repeatedly broken deployments, and `serve` and `store-update` run it.
@@ -51,7 +51,6 @@ the volume **is** the agent's home, and every harness keeps its state where it d
   .hermes-webui/                     WebUI state (today /opt/data/webui)
   .claude/  .claude.json  .codex/    as each harness defaults; a new one (gemini) adds its own
   .config/gh/  .config/circleback/   credentials, as today under home/
-  .config/contexture/harnesses.yaml  the manifest
   .config/contexture/restic-password harness-backup's repository password
   .local/state/contexture/           harness-status.json, backup-status.json
 ```
@@ -126,41 +125,52 @@ Hermes also brings its own Python 3.14, node and Chromium, ignoring the image's.
 toolchain, but a private one: nothing outside Hermes calls it, and `/opt/harnesses/bin` exposes
 only `hermes`.
 
-### The manifest
+### Choosing harnesses: three compose variables
 
-`~/.config/contexture/harnesses.yaml`, seeded from the image's default on first boot and never overwritten
-after:
+Which harnesses a container has, which of their services run, and which are held back are
+deployment choices, so they live where the rest of a deployment's choices do -- in compose:
 
 ```yaml
-harnesses:
-  hermes:        { channel: stable, services: [gateway, dashboard] }
-  hermes-webui:  { channel: stable, services: [webui] }
-  claude:        { channel: stable, services: [remote] }
-  codex:         { services: [remote] }
-  agy:           { services: [remote] }
-  agent-browser: {}
-  cb:            {}
-  # gemini:      {}                     adding a harness is one line, then a restart
-  # codex:       { version: 0.162.1 }   a pin holds a tool back
+# harnesses/hermes/compose.yaml, the shared file every store includes from main
+HARNESSES: ${HARNESSES:-hermes,hermes-webui,claude,codex,agy,agent-browser,cb}
+HARNESS_SERVICES: ${HARNESS_SERVICES:-hermes-gateway,hermes-dashboard,hermes-webui,claude-remote,codex-remote,agy-remote}
+
+# a store's own override, only when it differs
+HARNESSES: hermes,hermes-webui,claude,codex,agy,agent-browser,cb,gemini
+HARNESS_PINS: codex=0.162.1
 ```
 
-No version means "latest on its channel". A `version` holds it. `services` picks which of the
-harness's services run in this container (see Services); a harness with none is just a CLI on PATH.
+- `HARNESSES` is what `harness-install` installs. A harness with no selected service is just a CLI
+  on PATH.
+- `HARNESS_SERVICES` is which programs run, by the names the recipes give them (see Services). It
+  replaces today's three switches (`HERMES_DASHBOARD`, `HERMES_WEBUI_ENABLED`,
+  `HARNESS_REMOTE_AGENTS`), and sits beside the ports, origins and passwords those services need
+  anyway -- one decision in one file.
+- `HARNESS_PINS` holds a tool at a version, the rollback for a bad release. Unpinned tools follow
+  the channel their recipe defaults to (`stable` for Hermes, the WebUI and claude).
+
+Defaults propagate. They are set in the shared compose file, which every store includes from
+`main`, so adding a harness to the default reaches every store on merge, the same way a ctxr bump
+does; a store overrides only what it wants different, and the history of that is its own repo's.
+
+Changing any of the three is `docker compose up -d`, which recreates the container. That is a
+deliberate, rare act -- adding a harness, turning a service on or off -- and it is not how
+upgrades happen: the daily `harness-install --update` changes no variable and recreates nothing.
 
 Each name maps to a recipe shipped in the image, `lib/harnesses/<name>/`: how to install and update
 it, how to read the installed version, where its binary is, which harnesses it needs
-(`hermes-webui` needs `hermes`), which services it can run, and what of its state is backed up and tracked (see Backups follow the recipes). A name with no recipe, or a service
-its recipe does not offer, fails loudly at boot.
+(`hermes-webui` needs `hermes`), which services it can run, and what of its state is backed up and
+tracked (see Backups follow the recipes). A name with no recipe, a service no selected harness
+offers, or a pin for a harness not selected fails loudly at boot.
 
-The platform's own entry in the config allowlist is the manifest, so the config repo shows when a
-tool was added or pinned. The volume itself is in neither backup.
+The harnesses volume is in neither backup.
 
 ### Installing and updating
 
 `harness-install`, a platform script, is the single path that writes `/opt/harnesses`:
 
 - **At boot**, the entrypoint runs `harness-install` before it starts the supervisor, so every
-  harness is in place before any service runs. It installs anything in the manifest that is
+  harness is in place before any service runs. It installs anything in `HARNESSES` that is
   missing, reinstalls a tool whose recipe says the platform changed under it (node major for the
   npm tools), and writes the supervisor's program list (see Services). It does not upgrade. A
   failed install leaves that harness's programs out and is reported; it does not stop the boot.
@@ -168,7 +178,7 @@ tool was added or pinned. The volume itself is in neither backup.
   `harness-install --update` daily at a quiet hour, via `harness-schedule`. It must be
   in-container, not a separate compose service like the backup schedulers: it restarts programs
   through supervisord's socket, and `hermes update` stops and restarts gateways by PID, both of
-  which only reach the container they run in. Per tool: update to the newest version the manifest
+  which only reach the container they run in. Per tool: update to the newest version `HARNESS_PINS`
   allows, run its smoke test (`--version`), and on failure put the previous version back. One log
   line per tool, one status file (`~/.local/state/contexture/harness-status.json`, beside `backup-status.json`).
 - **By hand**, `docker exec -u agent <container> harness-install --update [name]`.
@@ -200,7 +210,7 @@ A harness can bring long-running services, and every one of them is the same kin
 | codex | `remote` | `codex remote-control --no-daemon` |
 | agy | `remote` | `agy remote-control serve` |
 
-Today these are split across two mechanisms and none of them is chosen by the manifest: the
+Today these are split across two mechanisms with a switch each: the
 dashboard comes from the Hermes base image, `webui` and the three `*-remote` services are s6
 directories baked into this image, each switched on by its own variable (`HERMES_DASHBOARD`,
 `HERMES_WEBUI_ENABLED`, `HARNESS_REMOTE_AGENTS`), and `harness-remote` hard-codes the list of
@@ -208,19 +218,18 @@ remote harnesses. Adding one -- gemini, say -- is an image release, the cost thi
 remove.
 
 After: a harness's recipe declares the services it can run -- name, command, directory, and the
-probe that says it is serving -- and the manifest's `services` picks which run. `harness-install`
+probe that says it is serving -- and `HARNESS_SERVICES` picks which run. `harness-install`
 renders one supervisord `[program:...]` per selected service (`hermes-dashboard`, `hermes-webui`,
 `claude-remote`, ...; the recipe names it, and two recipes claiming one name is a boot error) into
 the generated `/run/harness/supervisord.conf`. An unselected service simply has no program, which
 replaces both the enable variables and s6's "exit 125 to stay down" `finish` scripts. After updating
 a harness it restarts that harness's programs (`supervisorctl restart`) -- also how the dashboard
 and WebUI get onto new code after `hermes update`, since Hermes' updater leaves both to their owner.
-A manifest edit applies with `harness-install --services`, which re-renders and runs
-`supervisorctl update`: changed programs restart, removed ones stop, others are untouched.
+A changed `HARNESS_SERVICES` takes effect with the container's recreate, like any compose change.
 
 The image then carries no harness's service at all: the baked `webui` and `*-remote` directories,
-the enable variables and the hard-coded list all go, and the manifest is in the config repo, so
-switching a service on shows up in its history. The container healthcheck stops naming ports and
+the three enable variables and the hard-coded list all go, replaced by one variable whose
+history is the store's own compose override. The container healthcheck stops naming ports and
 becomes `harness-install status`: every selected program is RUNNING and its recipe's probe answers.
 
 What a deployment still sets in compose is what is genuinely its own: ports, origins, passwords,
@@ -231,7 +240,7 @@ service, not the choice of whether it runs.
 the root profile and `hermes-gateway-<name>` for each directory under `~/.hermes/profiles/` with
 a `SOUL.md` -- the marker Hermes' own boot reconciliation uses. Every store runs the default profile
 only today. A profile created at runtime (`hermes profile create`) gets its gateway on the next
-`harness-install --services` or container start, not instantly; and a gateway is stopped with
+container start, not instantly; and a gateway is stopped with
 `supervisorctl stop`, since `hermes gateway stop` from inside would be relaunched. Both are the
 price of not running s6 (see Alternatives).
 
@@ -309,8 +318,8 @@ A system package a harness needs is a reviewed platform image change, as before.
 
 ### Rollback
 
-- **claude, codex, agy, agent-browser, cb:** pin `version` in the manifest and run
-  `harness-install --update <name>`. Seconds, no image.
+- **claude, codex, agy, agent-browser, cb:** add `<name>=<version>` to the store's `HARNESS_PINS`
+  and `docker compose up -d`. A minute, no image.
 - **Hermes cannot be pinned backwards.** Once a newer release has written `state.db`, older
   releases refuse to open it. So every scheduled Hermes update runs `hermes update --backup`, which
   takes a full `hermes backup` zip first, and the way back is `hermes import` of that zip followed
@@ -369,8 +378,8 @@ home, minus every recipe's `backup.exclude`. Restore is `restic restore`, then e
 archive's `backup.restore`. The `hermes backup` reasoning in today's script -- `sqlite3.backup()`,
 no WAL sidecars, no foreign `gateway_state.json` -- is unchanged; it just moves into Hermes' recipe.
 
-**`harness-config-push`** renders its allowlist from the manifest's harnesses' `config` entries plus
-the manifest itself, and still takes `HARNESS_CONFIG_INCLUDE`/`EXCLUDE` for a store's own additions.
+**`harness-config-push`** renders its allowlist from the `config` entries of the harnesses in
+`HARNESSES`, and still takes `HARNESS_CONFIG_INCLUDE`/`EXCLUDE` for a store's own additions.
 It stays an allowlist: a new harness's state is invisible until its recipe names it. The
 bundled-skill test (`HARNESS_CONFIG_BUNDLED_SKILLS_DIR`) becomes part of Hermes' `config` entry,
 pointing at `/opt/harnesses/hermes/skills`.
@@ -431,7 +440,7 @@ the supervisor Hermes recognises: Hermes detects s6 as PID 1 and then does its o
 `container_boot` brings each profile's gateway back in its last recorded state (an
 operator-stopped gateway stays stopped), and `hermes gateway start/stop/restart` act through s6.
 Under supervisord Hermes sees no service manager, so those become ours: a new profile's gateway
-waits for `harness-install --services`, stop is `supervisorctl stop`, and a stopped gateway starts
+waits for the next container start, stop is `supervisorctl stop`, and a stopped gateway starts
 again on reboot.
 
 Rejected because none of that is used. Every store runs the default profile only -- pkm's second
@@ -448,10 +457,21 @@ It would flip if Hermes profiles become a feature stores rely on, or if the phas
 supervisord mishandling status 75 or Hermes' process groups.
 
 **Docker as the supervisor: one compose service per program.** Same image, shared volumes,
-`restart: always`, a health check and log stream per service. Rejected because the manifest could
-no longer choose services -- compose services are fixed in the store's compose file -- and an update
-in one container would have to restart programs in others, which needs the Docker socket inside a
-container the agent runs in.
+`restart: always`, a health check and log stream per service. Rejected because choosing a service
+would mean writing a compose service per program -- with its own volumes, environment and health
+check -- in place of one name in `HARNESS_SERVICES`, and an update in one container would have to
+restart programs in others, which needs the Docker socket inside a container the agent runs in.
+
+**A manifest in the home** (`~/.config/contexture/harnesses.yaml`, seeded on first boot). Its case:
+it changes without recreating the container (`harness-install --services` re-renders and reloads
+the supervisor), the agent or the person can edit it without host access, and the config repo
+records it. Rejected because a seeded file never receives a new default -- a harness added to the
+image's default would never reach an existing store -- because a service switched on there still
+needs its ports and passwords in compose, splitting one decision across two files, and because
+"the agent can turn on its own remote-control service" is the capability the runtime user section
+keeps out of reach. The recreate it avoids happens only when the set of harnesses or services
+changes, a few times a year. It would flip if people without host access must choose their own
+harnesses, or if service changes become frequent enough that recreates hurt.
 
 **Let each harness self-update in place.** Least code. Rejected because a pin cannot be honoured
 and nothing can report what is installed; `harness-install` keeps one writer.
@@ -475,8 +495,8 @@ packages, that is a platform image change, reviewed.
 ## Costs accepted
 
 - Two containers can run different harness versions. With ~20 people that can mean "works for me"
-  reports. The answer, if it bites, is pinning in the shared default manifest -- a one-line PR with
-  no build.
+  reports. The answer, if it bites, is a `HARNESS_PINS` default in the shared compose file -- a one-line
+  PR with no build.
 - A bad upstream release reaches stores the morning after it ships, without a CI gate. The smoke
   test and per-tool rollback bound it; Hermes' bound is a restore.
 - The platform owns supervision and the UID remap, which upstream used to own, and Hermes' own
