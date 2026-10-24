@@ -585,6 +585,17 @@ harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store (on unless =0), t
 harnesses/hermes/s6-rc.d/*-remote/     Claude Code, Codex and agy remote control, off unless selected
 ```
 
+In progress, not yet deployed (see [docs/design/harnesses-in-home.md](docs/design/harnesses-in-home.md)):
+
+```
+runtime/Dockerfile                    contexture-runtime: the platform with no harness in it
+runtime/entrypoint.sh                 PUID/PGID remap as root, then everything as `agent`
+runtime/supervisord.conf              the supervisor; its programs are rendered at each boot
+lib/harness-install.py                shipped as `harness-install`: installs, updates and supervises harnesses
+lib/harnesses/<name>/                 one recipe per harness: recipe.toml, install, latest
+lib/install-node.sh                   Node 24 from nodejs.org, hashes pinned here
+```
+
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow
 matrices. There is no shared *base image*, and that is not an oversight: each harness brings its
 own base, so the only reusable piece is the small harness-agnostic layer that installs `gh` and

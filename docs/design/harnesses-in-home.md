@@ -1,6 +1,7 @@
 # Harnesses live beside the home, not in the image
 
-Status: proposed, 2026-10-23. Nothing here is implemented yet.
+Status: proposed 2026-10-23. Phase 1 is built (2026-10-24): `runtime/`, `lib/harness-install.py`,
+`lib/harnesses/`, tested in CI, not published or deployed. Phases 2 and 3 are not started.
 
 ## Why
 
@@ -71,12 +72,23 @@ today -- must add that mapping first** (`name: pkm-leilei_data`); otherwise Comp
 
 ```
 /opt/harnesses/
-  bin/                  symlinks, first on PATH: hermes, claude, codex, agy, agent-browser, cb
-  hermes/               git checkout (install.sh --dir)
-  hermes-webui/         release source tree, run with Hermes' python
-  claude/  codex/  agy/  agent-browser/  cb/
-  .installed.json       what harness-install last put here: name, version, source, time
+  bin/                  symlinks, LAST on PATH: hermes, claude, codex, agy, agent-browser, cb
+  claude/
+    2.1.308/            one directory per installed version, never moved after install
+    2.1.287/            the version it replaced, kept for a rollback
+    current -> 2.1.308  the one in use; an update or a rollback flips this link
+  codex/  agy/  agent-browser/  cb/  hermes/  hermes-webui/   the same shape
+  .installed.json       what harness-install put here: version, previous, platform facts, time
 ```
+
+Versions are never moved because installers write absolute paths into them (claude's launcher is
+an absolute symlink into its own version directory). An update installs the new version beside
+the running one and flips `current` only after the new binary answers `--version`; a failure
+leaves `current` alone. One previous version is kept, so a pin back to it is a link flip with
+nothing downloaded.
+
+`bin/` is last on PATH, after the platform: the volume is writable by the agent, and nothing in
+it may shadow `ctxr`, `gh` or the platform python.
 
 A separate volume rather than a directory in the home (`~/.local/share/harnesses`), because it is a **cache**:
 
@@ -265,11 +277,14 @@ One container, the same as today, with nothing in it running as root once it has
    service plus the platform's own two, `harness-update` (long-running) and `store-update` (runs
    once at start, `autorestart=false`, never fails the boot -- the s6 `finish` exit 125 it replaces).
 
-Every program logs to the container's stdout with a `[name]` prefix, so `docker compose logs`
-stays the one place to read. Programs restart on any exit (`autorestart=true`), which is what
+Every program, and supervisord's own notices (FATAL, restarts), log to the container's stdout, so
+`docker compose logs` stays the one place to read. supervisord adds no prefix; `harness-remote`
+prefixes its harness's lines (`[claude] ...`), and the others name themselves. Programs restart on any exit (`autorestart=true`), which is what
 `--external-supervisor`'s status 75 needs. supervisord's one sharp edge is that a program which
-keeps dying inside `startsecs` goes FATAL and is never retried; programs get a long `startretries`
-and the healthcheck reports a FATAL program, so a crash loop is visible rather than silent.
+keeps dying inside `startsecs` goes FATAL and is never retried. That is used rather than fought:
+`startsecs=5`, `startretries=3`, so a program that cannot start at all (a missing store, a bad
+argument) is FATAL within seconds and `harness-install status` fails, while one that crashes after
+running -- `harness-remote` waits 10 seconds before returning -- is simply restarted.
 `stopasgroup`/`killasgroup` take a remote session's whole process group down with it, which
 `harness-remote` already arranges.
 
@@ -319,7 +334,10 @@ A system package a harness needs is a reviewed platform image change, as before.
 ### Rollback
 
 - **claude, codex, agy, agent-browser, cb:** add `<name>=<version>` to the store's `HARNESS_PINS`
-  and `docker compose up -d`. A minute, no image.
+  and `docker compose up -d`. If that version is the one kept on disk, it is a link flip with no
+  download; otherwise it installs it. A minute, no image. agy is the exception among these: its
+  publisher serves only the latest build, so it can go back only to the version kept on disk, and
+  it updates itself inside its version directory between our updates.
 - **Hermes cannot be pinned backwards.** Once a newer release has written `state.db`, older
   releases refuse to open it. So every scheduled Hermes update runs `hermes update --backup`, which
   takes a full `hermes backup` zip first, and the way back is `hermes import` of that zip followed
@@ -344,7 +362,7 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 | SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed (see SQLite below) |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
 | `/opt/hermes/skills` (used by `harness-config-push` to tell shipped skills from authored) | `HARNESS_CONFIG_BUNDLED_SKILLS_DIR=/opt/harnesses/hermes/skills` |
-| `profile.d/10-hermes-path.sh` | rewritten: `/opt/harnesses/bin:/opt/contexture/venv/bin:...` |
+| `profile.d/10-hermes-path.sh` | `runtime/profile.d/10-runtime-path.sh`: `/opt/contexture/venv/bin:...:/opt/harnesses/bin`, platform first |
 | Chromium on PATH via the Playwright glob | `agent-browser`'s and Hermes' own browsers; the image keeps only the shared libraries they need |
 
 `HERMES_WRITE_SAFE_ROOT` keeps its meaning -- the agent's own state, the store, and `/tmp` -- as
@@ -563,9 +581,13 @@ comments only, plus each store's own `/opt/data` paths (pkm's compose comment on
 
 ## Phasing
 
-1. **Platform image + `harness-install`, CLIs only.** Build `contexture-runtime` without Hermes,
+1. **Platform image + `harness-install`, CLIs only.** *Built.* Build `contexture-runtime` without Hermes,
    with the recipes for claude, codex, agy, agent-browser and cb, and boot-test it in CI with an
-   empty harnesses volume. Not yet deployed.
+   empty harnesses volume. Not yet deployed. Tests: `lib/tests/harness-install-test.py` (fake
+   recipes, no image), `lib/tests/runtime-container-test.py` (the image with fake harnesses, no
+   network: supervision, privilege drop, update restarts, a parallel shutdown, PUID remap, a
+   configuration error) and `lib/tests/runtime-install-test.sh` (every real recipe from its
+   publisher).
 2. **Hermes and the WebUI as harnesses.** Recipes, the entrypoint, the platform venv. CI boots a
    container, installs Hermes, starts the gateway under supervisord, runs `hermes update` and
    checks the gateway came back on the new code (status 75 relaunch), restarts the dashboard and

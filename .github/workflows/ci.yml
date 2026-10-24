@@ -85,6 +85,61 @@ jobs:
       - name: Test opt-in configuration and shutdown
         run: python3 lib/tests/harness-remote-test.py
 
+  # harness-install against fake recipes in a temp directory: selection, pins, rollback, pruning,
+  # the rendered supervisor config. Only python3, so it reports in seconds.
+  harness-install:
+    name: harness-install
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test harness-install
+        run: python3 -B lib/tests/harness-install-test.py
+
+  # The runtime image (docs/design/harnesses-in-home.md, phase 1). Built and tested, never pushed:
+  # release.yml does not publish it until the stores move to it.
+  runtime:
+    name: build (runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve CTXR_VERSION
+        id: ctxr
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < CTXR_VERSION)"
+          [ -n "${version}" ] || { echo "::error::CTXR_VERSION is empty"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: runtime/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: contexture-runtime:ci
+          build-args: |
+            CTXR_VERSION=${{ steps.ctxr.outputs.version }}
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,mode=max,scope=runtime
+
+      # No network: fake harnesses under the real recipes' services.
+      - name: Test supervision
+        run: python3 lib/tests/runtime-container-test.py contexture-runtime:ci
+
+      # The network: every real recipe, from its publisher, into an empty volume.
+      - name: Test installing the real harnesses
+        run: sh lib/tests/runtime-install-test.sh contexture-runtime:ci
+
   build:
     name: build (${{ matrix.harness }})
     runs-on: ubuntu-latest

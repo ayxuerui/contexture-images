@@ -1,0 +1,17 @@
+# Google's Antigravity CLI (`agy`).
+#
+# Installed straight from the manifest its own installer reads -- tarball URL and sha512 -- rather
+# than by running that installer, which only ever installs into ~/.local/bin and exits early when
+# a binary is already there. The manifest serves the latest build only, so agy cannot be pinned:
+# what lands is what the publisher serves, and harness-install warns when that differs from what
+# it asked for. A pin can still return to a version already on disk, since the previous version
+# directory is kept.
+#
+# agy updates itself in the background during ordinary runs, inside its own version directory.
+# harness-install records what it installed; `status` reports what `agy --version` says now.
+binaries = ["agy"]
+pinnable = false
+
+[services.agy-remote]
+command = ["python3", "/usr/local/bin/harness-remote", "run", "agy"]
+environment = { HARNESS_REMOTE_AGENTS = "agy", HARNESS_REMOTE_HOME = "${HOME}" }

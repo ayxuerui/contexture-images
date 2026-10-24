@@ -1,0 +1,2 @@
+#!/bin/sh
+exec npm view agent-browser version

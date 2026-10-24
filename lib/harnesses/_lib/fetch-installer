@@ -1,0 +1,17 @@
+#!/bin/sh
+# Download a vendor's curl|bash installer to a file and check it BEFORE bash runs it.
+#
+# Moved here from install-agent-clis.sh, which has the full story: agy's URL has been seen serving
+# its script gzip-compressed with no Content-Encoding header, so curl hands over binary and
+# `curl | bash` fails with a syntax error. A body that is still not a script after decompressing
+# fails here, naming the URL.
+set -eu
+[ "$#" -eq 2 ] || { echo "fetch-installer: usage: fetch-installer URL DEST" >&2; exit 2; }
+url=$1; dest=$2
+curl -fsSL --retry 3 -o "${dest}" "${url}" || { echo "fetch-installer: could not download ${url}" >&2; exit 1; }
+if [ "$(head -c 2 "${dest}" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+  echo "fetch-installer: ${url} served gzip with no Content-Encoding; decompressing" >&2
+  gzip -dc < "${dest}" > "${dest}.sh" && mv "${dest}.sh" "${dest}" \
+    || { echo "fetch-installer: ${url} looked gzip-compressed but would not decompress" >&2; exit 1; }
+fi
+[ "$(head -c 2 "${dest}")" = '#!' ] || { echo "fetch-installer: ${url} did not serve a shell script" >&2; exit 1; }
