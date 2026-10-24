@@ -242,7 +242,20 @@ def reported_version(recipe, prefix):
 
 
 def valid(recipe, prefix):
-    return prefix.is_dir() and all(os.access(prefix / 'bin' / b, os.X_OK) for b in recipe.binaries)
+    """An intact install: every binary present, and the recipe's `check` hook, if any, passes.
+
+    The hook is for a harness whose install is not all in its version directory -- Hermes keeps its
+    runtime in the home -- so a version can be on disk and still not runnable."""
+    if not prefix.is_dir() or not all(os.access(prefix / 'bin' / b, os.X_OK) for b in recipe.binaries):
+        return False
+    check = recipe.hook('check')
+    if not check:
+        return True
+    result = subprocess.run([str(check), str(prefix)], env=dict(os.environ, HARNESS_PREFIX=str(prefix)),
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        log(f'{recipe.name}: {prefix.name} is on disk but fails its check; reinstalling it')
+    return result.returncode == 0
 
 
 def latest(recipe):

@@ -102,6 +102,27 @@ class MigrateHome(unittest.TestCase):
         self.migrate('--reverse')
         self.assertEqual(tree(self.volume), before)
 
+    def test_reverse_after_the_runtime_has_used_the_home(self):
+        before = tree(self.volume)
+        self.migrate('--agents-stopped')
+        v = self.volume
+        (v / '.hermes/state.db-wal').unlink()                    # Hermes checkpointed it away
+        (v / '.hermes/installs/key').mkdir(parents=True)        # Hermes' runtime, since
+        (v / '.hermes/installs/key/facts.json').write_text('{}')
+        (v / '.ssh').mkdir()                                     # the agent, in its home
+        (v / '.ssh/known_hosts').write_text('github.com ...')
+        (v / '.local/state/contexture/harness-status.json').write_text('{}')
+        out = self.migrate('--reverse')
+        self.assertIn('deleted since the migration: .migrating-root/.hermes/state.db-wal', out)
+        after = tree(v)
+        for gone in ('.migrating-root', '.migrating-nested', '.migrate-home-dropped', '.hermes', '.ssh'):
+            self.assertNotIn(gone, after, gone)
+        self.assertEqual(after['installs/key/facts.json'][0], b'{}', 'new Hermes state goes to the Hermes root')
+        self.assertEqual(after['home/.ssh/known_hosts'][0], b'github.com ...', 'new home entries go into home/')
+        unchanged = {k: v for k, v in before.items() if k != 'state.db-wal'}
+        for path, value in unchanged.items():
+            self.assertEqual(after.get(path), value, path)
+
     def test_running_twice_is_a_no_op(self):
         self.migrate('--agents-stopped')
         after = tree(self.volume)

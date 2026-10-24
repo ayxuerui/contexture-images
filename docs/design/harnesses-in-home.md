@@ -564,8 +564,10 @@ pkm, pkm-leilei and readyrun-brain run on this host. Per store, one at a time, w
 counted first:
 
 1. `docker compose stop agents`, so nothing writes the volume. Take `harness-backup` (the restic
-   snapshot) and a `hermes backup` zip kept aside. The new Hermes will be ≥ 0.22.x and write
-   `state.db`; the old image cannot open it afterwards, so this zip is the rollback.
+   snapshot) and a `hermes backup` zip kept aside, both with the OLD image. The new Hermes will be
+   ≥ 0.22.x and write `state.db`; the old image cannot open it afterwards, so this zip is the
+   rollback. It is the only restore point: the recipe's own pre-upgrade backup needs a working
+   current version, and on a migrated home there is none yet.
 2. **Move the home into place**, with `harness-migrate-home`, a one-shot on the new image that
    mounts the volume and refuses to run twice (a layout marker in `.local/state/contexture/`):
    - every root entry except `home/` moves into `.hermes/`; then `home/`'s contents, dotfiles
@@ -580,16 +582,35 @@ counted first:
      were.
    - `.hermes/.install_method` is deleted if it reads `docker`; `hermes update` refuses to run on a
      Docker-stamped home inside a container.
-   - `harness-migrate-home --reverse` puts the old layout back, for the rollback below.
-3. Merge the store's compose change: the volume key `data` to `home`, keeping its `name:` (and
-   adding one where the store had none -- pkm-leilei), plus the image and the `harnesses`
-   volume. Stores include the shared compose file from `main`, so the contexture-images merge is
-   the rollout -- as for a ctxr bump, wait for the release before `up`.
+   - `harness-migrate-home --reverse` puts the old layout back, for the rollback below. It works
+     on a home that has been used since: an entry the runtime deleted (Hermes checkpoints a WAL
+     away) is skipped, state Hermes wrote since goes back to the Hermes root, and anything new at
+     the top of the home goes into `home/`. The first rehearsal found it aborting on exactly that.
+3. The store's compose change: its include moves from `harnesses/hermes/compose.yaml` to
+   `runtime/compose.yaml`, the volume key `data` becomes `home` keeping its `name:` (and gaining one
+   where the store had none -- pkm-leilei's is `pkm-leilei_data`), and `HARNESS_REMOTE_AGENTS`
+   becomes entries in `HARNESS_SERVICES`. Stores still on the old include are untouched, so stores
+   move one at a time.
 4. `docker compose up -d`; `harness-install` populates the harnesses volume. Check
    `~/.local/state/contexture/harness-status.json`, `hermes doctor`, and every selected program
    (`harness-install status`).
 
-Step 2 is rehearsed first on a copy of pkm-leilei's volume, never on the live one.
+Step 2 is rehearsed first on a copy of pkm-leilei's volume, never on the live one: copy the volumes
+(mounted read-only), migrate the copy, install with network but no services, boot the services
+with **no network** (the copy's `.env` holds the live Telegram token; a second poller on one bot
+would fight the live gateway), check, stop, `--reverse`, and compare with an untouched copy.
+
+What the rehearsals found, all fixed before the live move:
+
+- `--reverse` aborted on a used home (above).
+- A Hermes install is split: the checkout in the harnesses volume, its runtime in `~/.hermes/tools`
+  and `~/.hermes/installs`, which `hermes backup` omits. A home restored from backup, or a kept
+  harnesses volume over a replaced home, has a checkout whose launcher's interpreter is missing,
+  and every program launches into a Hermes trying to rebuild itself. The recipe's `check` hook now
+  catches that and `harness-install` reinstalls the version at boot.
+- On its first start, Hermes 0.22.5 opening pkm-leilei's 0.21.3-era `state.db` failed once ("no
+  such savepoint: fts_align_empty", the gateway exits 1); supervisord's restart opened it cleanly
+  and `integrity_check` is ok. Expected once per store, on the first boot after the move.
 
 Rollback: `harness-migrate-home --reverse`, compose back to `contexture-hermes:<last tag>`, then
 `hermes import` the zip from step 1 (the new Hermes may already have written `state.db`).

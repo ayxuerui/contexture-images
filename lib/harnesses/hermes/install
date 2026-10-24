@@ -7,7 +7,9 @@ current="$(dirname "${HARNESS_PREFIX}")/current"
 
 # A restore point before a new version migrates the state, taken by the version running now. A
 # backup that fails stops the install: an upgrade without a way back is not taken.
-if [ -x "${current}/bin/hermes" ] && [ -f "${HERMES_HOME}/state.db" ]; then
+# Only a whole current version can take it: one whose runtime is missing (see `check`) cannot run
+# `hermes backup`, and is being reinstalled, not upgraded.
+if [ -x "${current}/bin/hermes" ] && [ -f "${HERMES_HOME}/state.db" ] && "$(dirname "$0")/check" "$(readlink -f "${current}")"; then
   points="${HOME}/.local/state/contexture/hermes-pre-update"
   mkdir -p "${points}"
   echo "hermes: backing up ~/.hermes before installing ${HARNESS_VERSION}"

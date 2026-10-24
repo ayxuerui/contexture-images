@@ -11,6 +11,7 @@ latest, then updates it. What it proves is the part of the design that only runn
     flips `current`, and restarts the gateway, dashboard and WebUI onto the new code
   - a pin back to the older version is refused, and the services keep running
   - harness-backup puts ~/.hermes in through `hermes backup`, and restore brings it back
+  - a checkout whose runtime is missing (a restored home) is reinstalled at boot
   - harness-config-push would track the recipes' files and none of the credentials
 
     python3 lib/tests/runtime-hermes-test.py contexture-runtime:ci
@@ -146,6 +147,18 @@ HARNESS_BACKUP_DESTINATION=/tmp/restic HARNESS_BACKUP_MIN_FREE_MB=100 harness-ba
         agent('supervisorctl', 'start', 'runtime:hermes-gateway', 'runtime:hermes-dashboard', 'runtime:hermes-webui')
         eventually(healthy, seconds=300, what='healthy after restore')
         print('PASS: harness-backup takes ~/.hermes through `hermes backup`, and restore brings the home back')
+
+        # --- a home without Hermes' runtime --------------------------------------------------------
+        # What a restore from backup leaves (hermes backup omits ~/.hermes/tools and installs/), or a
+        # harnesses volume kept while the home was replaced: the checkout is there, its interpreter
+        # is not. The recipe's check must catch it and reinstall, not start a half-installed Hermes.
+        docker('stop', '-t', '30', NAME)
+        docker('run', '--rm', '--entrypoint', 'sh', '-v', f'{NAME}-home:/home/agent', IMAGE,
+               '-c', 'rm -rf /home/agent/.hermes/tools /home/agent/.hermes/installs')
+        docker('start', NAME)
+        eventually(healthy, seconds=900, what='healthy after Hermes\' runtime was removed')
+        assert 'fails its check; reinstalling it' in docker('logs', NAME).stdout
+        print('PASS: a checkout whose runtime is gone is reinstalled at boot, and serves')
 
         # --- config repository ---------------------------------------------------------------------
         staged = sh('''

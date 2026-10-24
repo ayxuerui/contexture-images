@@ -240,6 +240,21 @@ probe = "http://127.0.0.1:${PORTED_PORT:-9000}/"
         self.run_tool('--update', HARNESSES='stateful')
         self.assertEqual(self.current('stateful'), '2.1.0', 'forward is fine')
 
+    def test_a_failing_check_reinstalls_the_current_version(self):
+        self.recipe('split', 'split', hooks=())
+        check = self.recipes / 'split' / 'check'
+        check.write_text('#!/bin/sh\n[ -e "$HARNESS_FAKE_DIR/runtime-ok" ]\n')
+        check.chmod(0o755)
+        (self.fake / 'runtime-ok').touch()
+        self.run_tool(HARNESSES='split')
+        self.run_tool(HARNESSES='split')
+        self.assertEqual(self.installs('split'), ['1.0.0'], 'a passing check installs once')
+        (self.fake / 'runtime-ok').unlink()
+        out = self.run_tool(HARNESSES='split')
+        self.assertIn('fails its check; reinstalling it', out)
+        self.assertEqual(self.installs('split'), ['1.0.0', '1.0.0'])
+        self.assertEqual(self.current('split'), '1.0.0')
+
     def test_hooks(self):
         self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated'))
         self.run_tool(HARNESSES='hooked')

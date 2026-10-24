@@ -151,12 +151,22 @@ def forward(volume):
 
 
 def reverse(volume):
+    """Put the Hermes-image layout back, on a home that has been used since the migration.
+
+    The runtime will have changed things under it: Hermes checkpoints and deletes a database's WAL,
+    writes new state into ~/.hermes, and the agent creates files in its home. So a moved entry that
+    is gone is skipped (it was deleted since), state written into ~/.hermes since goes back to the
+    Hermes root with the rest, and anything new at the top of the home goes into home/."""
     marker = volume / MARKER
     journal_path = volume / '.local/state/contexture/home-migration-journal.json'
     if not marker.exists() or not journal_path.exists():
         raise SystemExit(f'{volume} has no migration to reverse')
     journal = json.loads(journal_path.read_text())
+    steps = journal['steps']
+    staging = {'home', '.migrating-root', '.migrating-nested', '.migrate-home-dropped', '.migrate-home-journal.json'}
+    placed = {Path(target).parts[0] for _, target in steps if not target.startswith('.migrating')}
     data = json.loads(marker.read_text())
+
     for relative in data.get('rewritten', []):
         path = volume / relative
         original = path.with_name(path.name + '.pre-migrate')
@@ -172,9 +182,20 @@ def reverse(volume):
             os.rmdir(volume / directory)  # only if the migration created them and they are empty
         except OSError:
             break
+    # New at the top of the home since the migration (looked for after the rewritten files are put
+    # back, so their .pre-migrate copies are not mistaken for new): the agent's, so into home/.
+    newcomers = sorted(entry.name for entry in volume.iterdir()
+                       if entry.name not in placed | staging | KEEP_IN_PLACE)
     for directory in ('home', '.migrating-root', '.migrating-nested'):
         (volume / directory).mkdir(exist_ok=True)
-    for source, target in reversed(journal['steps']):
+
+    for name in newcomers:
+        os.rename(volume / name, volume / 'home' / name)
+    skipped = []
+    for source, target in reversed(steps):
+        if not os.path.lexists(volume / target):
+            skipped.append(target)
+            continue
         (volume / source).parent.mkdir(parents=True, exist_ok=True)
         os.rename(volume / target, volume / source)
         # A nested target (.config/contexture/restic-password) leaves directories the migration
@@ -186,15 +207,36 @@ def reverse(volume):
             except OSError:
                 break
             parent = parent.parent
+    # Hermes state written since the migration is still in the staged .hermes: it is Hermes', and
+    # the old layout keeps Hermes' state at the root.
+    leftover = volume / '.migrating-root' / '.hermes'
+    stranded = []
+    if leftover.exists():
+        for entry in sorted(leftover.iterdir()):
+            if os.path.lexists(volume / entry.name):
+                stranded.append(entry.name)
+            else:
+                os.rename(entry, volume / entry.name)
     for directory in ('.migrating-root/.hermes', '.migrating-root', '.migrating-nested'):
-        if (volume / directory).exists():
+        try:
             os.rmdir(volume / directory)
+        except OSError:
+            pass
     stash = volume / '.migrate-home-dropped'
     for name in journal.get('dropped', []):
-        os.rename(stash / name, volume / name)
-    if stash.exists():
+        if os.path.lexists(stash / name) and not os.path.lexists(volume / name):
+            os.rename(stash / name, volume / name)
+    try:
         os.rmdir(stash)
+    except OSError:
+        pass
     os.unlink(volume / '.migrate-home-journal.json')
+    if skipped:
+        log(f'{len(skipped)} moved entries were gone, deleted since the migration: {", ".join(skipped[:10])}')
+    if newcomers:
+        log(f'new since the migration, put in home/: {", ".join(newcomers)}')
+    if stranded:
+        log(f'WARNING: left in .migrating-root/.hermes, a name already back at the root: {", ".join(stranded)}')
     log(f'{volume} is back in the Hermes-image layout')
     return 0
 
