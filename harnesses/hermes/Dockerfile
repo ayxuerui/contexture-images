@@ -57,7 +57,7 @@ RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolch
 # Other models and a browser driver, available to the agent's shell on every store running this
 # image rather than only the one whose own Dockerfile installed them. A skill that reaches for
 # `codex` or `claude` and does not find it cannot run at all.
-ARG CODEX_VERSION=0.162.1
+ARG CODEX_VERSION=0.164.0
 ARG AGENT_BROWSER_VERSION=0.39.0
 # Circleback's CLI (`cb`), so a store agent can read meetings without a connector. Inert until
 # logged in; see the README.
