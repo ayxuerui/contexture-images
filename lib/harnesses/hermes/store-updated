@@ -1,0 +1,4 @@
+#!/bin/sh
+# After the store update: copy the store's Circleback runner into Hermes' scripts directory, or
+# remove a copy the store no longer ships. See lib/install-circleback-script.sh.
+HERMES_HOME="${HOME}/.hermes" STORE_DIR="${CONTEXTURE_STORE_ROOT:-/store}" exec ctxr-install-circleback-script

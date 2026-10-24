@@ -1,0 +1,123 @@
+# Hermes Agent (NousResearch), from its source installer -- the one install upstream supports
+# outside its Docker image.
+#
+# Like every other harness here, each version is its own directory: `install` runs upstream's
+# install.sh with --commit v<version> into <version>/src, and HOME pointed into <version>/home so
+# the launcher and the shell-rc edits it makes stay in that directory. Its state is the agent's
+# ~/.hermes, upstream's default; the installer puts its pinned Python, the dependency environments
+# and Chromium under ~/.hermes/tools and ~/.hermes/installs, which `hermes backup` leaves out.
+#
+# Forward only: a newer Hermes migrates state.db, and an older one refuses to open it afterwards.
+# So `install` takes a full `hermes backup` before installing a new version over an existing home,
+# a pin to an older version is refused, and going back is `hermes import` of that backup.
+binaries = ["hermes"]
+forward_only = true
+
+# The gateway. One serves every profile: since Hermes 0.22.5 the root profile's gateway
+# multiplexes them, and a gateway started for one profile is refused (exit 78, "does not get a
+# gateway of its own"). --external-supervisor: a restart or update exits 75 and supervisord
+# relaunches it on the new code.
+[services.hermes-gateway]
+command = ["hermes", "gateway", "run", "--replace", "--external-supervisor"]
+environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WRITE_SAFE_ROOT = "${HOME}:${CONTEXTURE_STORE_ROOT}:/tmp" }
+
+# The dashboard. Host and port come from compose (HERMES_DASHBOARD_HOST/PORT), defaulting to
+# loopback: Hermes refuses a non-loopback bind without dashboard auth in config.yaml.
+[services.hermes-dashboard]
+command = ["${HARNESS_RECIPE_DIR}/run-dashboard"]
+environment = { HERMES_HOME = "${HOME}/.hermes" }
+
+# `hermes backup` copies every database with sqlite3.backup() -- consistent under a live writer,
+# no WAL sidecars, no foreign gateway_state.json -- so ~/.hermes is backed up through it rather
+# than file by file. The pre-update backups `install` takes are restore points, not history.
+[backup]
+snapshot = "snapshot"
+restore = "restore"
+covers = [".hermes"]
+exclude = [".local/state/contexture/hermes-pre-update/"]
+
+# What the config repository tracks of ~/.hermes: harnesses/hermes/hermes-config.gitignore's rules,
+# rooted at .hermes/ instead of the repository root.
+[config]
+root = ".hermes"
+bundled_skills = "src/skills"
+rules = """
+!/README.md
+!/SOUL.md
+!/config.yaml
+!/cron/
+!/memories/
+!/plugins/
+!/scripts/
+!/sessions/
+!/skills/
+!/user-skills/
+.update_check
+.skills_prompt_snapshot.json
+.clean_shutdown
+.session_cleanup.lock
+.codex_gpt55_autoraise_notice
+.gws_write_approval.json
+.npm_lock_hash_*
+context_length_cache.yaml
+processes.json
+gateway.pid
+gateway.lock
+gateway_state.json
+gateway/
+terminal-sessions/
+state/
+whatsapp/
+pairing/
+slack-manifest.json
+pastes/
+web-ui-build-stamp.json
+*.init.lock
+*.dispatch.lock
+state.db
+response_store.db
+verification_evidence.db
+kanban.db
+kanban/
+*.db-shm
+*.db-wal
+*.dbimport-*
+*.sqlite-shm
+*.sqlite-wal
+models_dev_cache.json
+models_dev_cache.etag
+*_models_cache.json
+logs/
+.hermes_history
+*.log
+config.yaml.bak*
+config.yaml.*.bak
+config.yaml.corrupt.*
+.curator_backups/
+cron/output/
+cron/.tick.lock
+cron/.jobs.lock
+cron/.fire-*.lock
+cron/**/*.log
+cron/ticker_heartbeat
+cron/ticker_last_success
+cron/executions.db
+cron/notepad.db*
+cron/usage_audit.jsonl
+audio_cache/
+image_cache/
+*_cache/
+cache/
+tmp/
+skills/.*
+@HARNESS_CONFIG_BUNDLED_SKILLS@
+sandboxes/
+checkpoints/
+state-snapshots/
+plugins/*
+sessions/request_dump_*.json
+channel_directory.json
+profiles/
+__pycache__/
+*.pyc
+"""

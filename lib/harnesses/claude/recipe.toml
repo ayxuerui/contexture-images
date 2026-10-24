@@ -12,3 +12,9 @@ binaries = ["claude"]
 [services.claude-remote]
 command = ["python3", "/usr/local/bin/harness-remote", "run", "claude"]
 environment = { HARNESS_REMOTE_AGENTS = "claude", HARNESS_REMOTE_HOME = "${HOME}" }
+
+# Chat history, for the config repository (hermes-config.gitignore's home/.claude/projects/ rule).
+# .credentials.json is never tracked: the allowlist's credential denylist comes last.
+[config]
+root = ".claude"
+rules = "!/projects/"

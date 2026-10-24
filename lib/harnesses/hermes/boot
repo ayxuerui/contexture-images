@@ -1,0 +1,21 @@
+#!/bin/sh
+# At every boot, before any program starts: what upstream's stage2-hook.sh did that a source
+# install does not do for itself.
+set -eu
+HERMES_HOME="${HOME}/.hermes"
+mkdir -p "${HERMES_HOME}"
+
+# A home carried over from the Hermes image is stamped `docker`, and `hermes update` and the
+# installer's own checks refuse to treat it as a source install inside a container.
+if [ "$(cat "${HERMES_HOME}/.install_method" 2>/dev/null)" = docker ]; then
+  rm -f "${HERMES_HOME}/.install_method"
+  echo "hermes: removed the Docker install stamp from ~/.hermes"
+fi
+
+# The gateway's API server refuses to start without an API_SERVER_KEY of 16+ characters. Generate
+# one once, keep it in .env, and never replace one the operator set (in .env or the environment).
+if [ -z "${API_SERVER_KEY:-}" ] && ! grep -q '^API_SERVER_KEY=..*' "${HERMES_HOME}/.env" 2>/dev/null; then
+  umask 077
+  printf 'API_SERVER_KEY=%s\n' "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> "${HERMES_HOME}/.env"
+  echo "hermes: generated API_SERVER_KEY in ~/.hermes/.env"
+fi

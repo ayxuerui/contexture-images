@@ -1,7 +1,9 @@
 # Harnesses live beside the home, not in the image
 
-Status: proposed 2026-10-23. Phase 1 is built (2026-10-24): `runtime/`, `lib/harness-install.py`,
-`lib/harnesses/`, tested in CI, not published or deployed. Phases 2 and 3 are not started.
+Status: proposed 2026-10-23. Phases 1 and 2 are built (2026-10-24): `runtime/`,
+`lib/harness-install.py`, `lib/harnesses/`, the recipe-driven backup and config push, and
+`harness-migrate-home`; tested in CI, not published or deployed. Phase 3, migrating the stores, is
+not started.
 
 ## Why
 
@@ -117,8 +119,25 @@ always keeps its pinned Python, the venv generations and its tools under `$HERME
 but upstream documents it as a process-local development override and its launchers ignore it.
 
 So `/opt/harnesses/hermes/` holds the code, and Hermes' runtime stays where upstream puts it. That
-is fine for backups -- `hermes backup` already excludes `tools/` and `installs/`, and the Hermes recipe excludes them from the file-level snapshot too -- and it is the
-only layout `hermes update` maintains. Fighting it would make every Hermes upgrade ours to debug.
+is fine for backups -- `hermes backup` already excludes `tools/` and `installs/`, and the Hermes
+recipe excludes them from the file-level snapshot too -- and it is the layout upstream's installer
+maintains. Fighting it would make every Hermes upgrade ours to debug.
+
+**Hermes upgrades like the others, not by `hermes update`.** `hermes update` updates its checkout
+in place and can only follow a channel; it cannot go to a named version. So a Hermes upgrade is
+what every other harness's is: install.sh with `--commit v<version>` into a new version directory,
+beside the running one, then a flip. That keeps pins, the `--version` smoke test before the flip,
+and "a failed install never touches the running version". The installer runs Hermes' config
+migration itself ("Configuration is up to date" is its last step). Each version is its own install
+key to Hermes' package manager, so after an old version's directory is pruned the recipe's `gc`
+hook runs `hermes pm gc` to drop that checkout's dependency environments. A cold install is about
+two minutes on arm64 (Hermes 0.22.5: 1.1 GB of checkout and builds, 1.8 GB of runtime under
+`~/.hermes`).
+
+The WebUI runs Hermes in-process, and needs no environment of its own: started with the platform's
+`python3` and `HERMES_WEBUI_AGENT_DIR` pointing at Hermes' checkout, it imports Hermes' bootstrap and
+relaunches itself inside Hermes' managed runtime (checked with Hermes 0.22.5, WebUI 0.52.492). That
+is also why its recipe says `restart_with = ["hermes"]`: a Hermes update restarts the WebUI.
 
 Gateway supervision does not need Hermes' own. Hermes picks a service manager by probing for s6
 (`s6-svscan` as PID 1), Windows, launchd or systemd; in this image it finds none and reports
@@ -203,8 +222,8 @@ Per-tool recipes:
 
 | Name | Install | Update |
 |---|---|---|
-| hermes | `install.sh --dir /opt/harnesses/hermes --non-interactive --skip-computer-use`, `HERMES_HOME=$HOME/.hermes` | `hermes update --yes --backup` (see Rollback); the gateway exits 75 and supervisord relaunches it on the new code, but Hermes leaves the dashboard and WebUI running on old code by design, so `harness-install` restarts those two afterwards |
-| hermes-webui | release tarball for the newest stable tag into `hermes-webui/`; `compileall` with Hermes' python | same, then restart its `webui` service |
+| hermes | `hermes backup` of the current home first (two restore points kept, under `~/.local/state/contexture/hermes-pre-update/`), then install.sh `--dir <version>/src --commit v<version> --non-interactive --skip-computer-use`, with HOME pointed into the version directory so the launcher and rc edits stay there | the same, into a new version directory; then the flip restarts the gateway, the dashboard and (through `restart_with`) the WebUI |
+| hermes-webui | the release's source tarball into `<version>/src`, and a `hermes-webui` launcher that runs `server.py` with the platform `python3` | the same |
 | claude | its native installer with `HOME=/opt/harnesses/claude`, `.local/bin/claude` symlinked -- what `install-agent-clis.sh` already does into `/opt/toolchain`, and the agent already runs it with its real `HOME` | rerun the installer with the target version |
 | codex, agent-browser, cb | `npm install -g --prefix /opt/harnesses/<name> <pkg>@<version>` with the image's node | same |
 | agy | its installer into `agy/` (it takes no version: a pin is a cache key and an expectation, as today) | same |
@@ -215,7 +234,7 @@ A harness can bring long-running services, and every one of them is the same kin
 
 | Harness | Service | Runs |
 |---|---|---|
-| hermes | `gateway` | `hermes gateway run --replace --external-supervisor`, one per profile (below) |
+| hermes | `hermes-gateway` | `hermes gateway run --replace --external-supervisor`, serving every profile (below) |
 | hermes | `dashboard` | `hermes dashboard --host ... --port ... --no-open` |
 | hermes-webui | `webui` | the WebUI server, on Hermes' python, agent in-process |
 | claude | `remote` | `claude remote-control` |
@@ -248,13 +267,14 @@ What a deployment still sets in compose is what is genuinely its own: ports, ori
 proxy trust (`HERMES_DASHBOARD_PORT`, `HERMES_WEBUI_ALLOWED_ORIGINS`, ...). Those are inputs to a
 service, not the choice of whether it runs.
 
-**Hermes' `gateway` is one program per profile.** `harness-install` renders `hermes-gateway` for
-the root profile and `hermes-gateway-<name>` for each directory under `~/.hermes/profiles/` with
-a `SOUL.md` -- the marker Hermes' own boot reconciliation uses. Every store runs the default profile
-only today. A profile created at runtime (`hermes profile create`) gets its gateway on the next
-container start, not instantly; and a gateway is stopped with
-`supervisorctl stop`, since `hermes gateway stop` from inside would be relaunched. Both are the
-price of not running s6 (see Alternatives).
+**One Hermes gateway serves every profile.** Since Hermes 0.22.5 the root profile's gateway
+multiplexes all of them, and a gateway started for a single profile refuses to run (exit 78:
+"Profile 'work' does not get a gateway of its own ... would double-bind its platforms"). Found by
+the phase-2 test: on 0.22.4 a per-profile gateway still ran, on 0.22.5 it was refused, so this
+design renders no per-profile programs at all. A profile created at runtime (`hermes profile
+create`) is picked up by the running gateway, with no supervisor involved. The one thing left to
+the supervisor: a gateway is stopped with `supervisorctl stop`, since `hermes gateway stop` from
+inside would be relaunched.
 
 What each recipe keeps is the part that is a contract rather than a preference: the foreground
 checks that `harness-remote` makes today (`codex` must have `--no-daemon`, `agy` must be `serve`, a
@@ -339,9 +359,11 @@ A system package a harness needs is a reviewed platform image change, as before.
   publisher serves only the latest build, so it can go back only to the version kept on disk, and
   it updates itself inside its version directory between our updates.
 - **Hermes cannot be pinned backwards.** Once a newer release has written `state.db`, older
-  releases refuse to open it. So every scheduled Hermes update runs `hermes update --backup`, which
-  takes a full `hermes backup` zip first, and the way back is `hermes import` of that zip followed
-  by a pin. `hermes update` itself rolls back a checkout that fails its syntax check.
+  releases refuse to open it. Its recipe is `forward_only`: a pin to an older version is refused
+  (the running version keeps running, and `harness-install status` fails, naming the refusal).
+  Every Hermes install over an existing home takes a full `hermes backup` first, with the version
+  being replaced, and a failed backup stops the install. The way back is `hermes import` of that
+  zip, then a pin.
 
 This follows the repository's "trial by release" habit: reversible changes ship and are reversed,
 rather than gated. Hermes is the one harness whose reversal is a restore, which is why its update
@@ -355,9 +377,10 @@ Today these come free with `FROM nousresearch/hermes-agent`. Each becomes ours:
 |---|---|
 | s6-overlay, `/init`, `entrypoint-dispatch.sh` | `tini` + our entrypoint + supervisord (Debian packages); no s6 |
 | `hermes` user (home `/opt/data`), `stage2-hook.sh` UID/GID remap and targeted chowns | the `agent` user (home `/home/agent`), remapped by our entrypoint as root before it drops privileges (see The runtime user) |
-| First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | `hermes update` and first `hermes` run seed config; `API_SERVER_KEY` generation moves to our entrypoint |
-| `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by `hermes update` instead, so no longer at every boot |
-| `02-reconcile-profiles` (`hermes_cli.container_boot`), `015-supervise-perms` | gone: `harness-install` renders a gateway program per profile instead. Lost with it: a gateway an operator stopped stays stopped across a reboot (`desired_state`); here every selected gateway starts |
+| First-boot seeding of `config.yaml`/`.env`, `API_SERVER_KEY` | the installer seeds config ("config prepared"); the Hermes recipe's `boot` hook generates `API_SERVER_KEY` in `~/.hermes/.env` when neither it nor the environment has one, and removes a `docker` install stamp |
+| `docker_config_migrate.py`, PM generation resolve, `skills_sync.py` at boot | done by the installer at each version's install, so no longer at every boot |
+| the s6 `store-update` service running `ctxr-install-circleback-script` | `runtime-store-update`: the store update, then every installed harness's `store-updated` hook; Hermes' runs the Circleback install |
+| `02-reconcile-profiles` (`hermes_cli.container_boot`), `015-supervise-perms` | gone: one multiplexing gateway serves every profile (Hermes 0.22.5+). Lost with it: a gateway an operator stopped stays stopped across a reboot (`desired_state`); here a selected gateway always starts |
 | `dashboard` s6 service, `main-hermes` placeholder | the `hermes` recipe's `dashboard` program; no placeholder needed |
 | SQLite 3.53.4 compiled in, ahead of Debian trixie's 3.46.1 | not needed (see SQLite below) |
 | `/opt/hermes/.venv` for WebUI, `harness-remote` and the document-skill libraries | split: WebUI runs on Hermes' python; `harness-remote` and pypdf/docx/openpyxl/pptx/bs4/reportlab go in a platform venv at `/opt/contexture/venv`, on PATH, so a Hermes update cannot remove them |
@@ -399,12 +422,22 @@ no WAL sidecars, no foreign `gateway_state.json` -- is unchanged; it just moves 
 **`harness-config-push`** renders its allowlist from the `config` entries of the harnesses in
 `HARNESSES`, and still takes `HARNESS_CONFIG_INCLUDE`/`EXCLUDE` for a store's own additions.
 It stays an allowlist: a new harness's state is invisible until its recipe names it. The
-bundled-skill test (`HARNESS_CONFIG_BUNDLED_SKILLS_DIR`) becomes part of Hermes' `config` entry,
-pointing at `/opt/harnesses/hermes/skills`.
+bundled-skill test (`HARNESS_CONFIG_BUNDLED_SKILLS_DIR`) becomes part of Hermes' `config` entry
+(`bundled_skills = "src/skills"`, inside its version directory).
+
+A recipe's `config.rules` are gitignore lines relative to its `root` -- Hermes' are today's
+hermes-config.gitignore rules, moved under `.hermes/` -- so the order of keeps and denies, which the
+allowlist depends on, survives. `harness-install allowlist` prefixes each recipe's anchored rules
+with its root (a bare name like `state.db` matches at any depth and is left alone), re-opens each
+root, and puts the credential denylist last so nothing re-opens it. `runtime/config-push.sh` hands
+the result to the unchanged `lib/config-push.sh`, which gained two variables:
+`HARNESS_CONFIG_HOME` (gh's HOME, which is the repository itself now) and
+`HARNESS_CONFIG_BUNDLED_SKILLS_PREFIX`.
 
 The config repository's paths change with the home (`config.yaml` becomes `.hermes/config.yaml`,
-`home/.claude/...` becomes `.claude/...`). The migration commits that as one `git mv`, so
-`git log --follow` keeps each file's history.
+`home/.claude/...` becomes `.claude/...`). The migration moves `.git` to the new root and the files
+with the home; the next harness-config-push commits the result, and git's rename detection keeps
+each file's history (`git log --follow`). No separate `git mv` commit is needed.
 
 ### SQLite
 
@@ -454,14 +487,13 @@ it or not. It remains the fallback if the platform work below proves fragile.
 
 **Keep s6-overlay.** Upstream's image runs it and the stores run it today without trouble. It is
 the supervisor Hermes recognises: Hermes detects s6 as PID 1 and then does its own supervision --
-`hermes profile create` registers a `gateway-<profile>` slot under `/run/service` at runtime,
-`container_boot` brings each profile's gateway back in its last recorded state (an
-operator-stopped gateway stays stopped), and `hermes gateway start/stop/restart` act through s6.
-Under supervisord Hermes sees no service manager, so those become ours: a new profile's gateway
-waits for the next container start, stop is `supervisorctl stop`, and a stopped gateway starts
-again on reboot.
+`container_boot` brings the gateway back in its last recorded state (an operator-stopped gateway
+stays stopped), and `hermes gateway start/stop/restart` act through s6. Under supervisord Hermes
+sees no service manager, so stop is `supervisorctl stop`, and a stopped gateway starts again on
+reboot. (Runtime registration of per-profile gateway slots was s6's other unique feature; Hermes
+0.22.5 retired per-profile gateways in favour of one multiplexing gateway, so it no longer counts.)
 
-Rejected because none of that is used. Every store runs the default profile only -- pkm's second
+Rejected because what is left is small. Every store runs the default profile only -- pkm's second
 profile, `leilei`, moved its Telegram bot to the pkm-leilei store on 2026-10-23 and was deleted --
 and the ~20-person plan is separate stores, not profiles. What remains is general supervision, and
 for that s6-overlay is the more expensive choice to own: four checksummed tarballs and their
@@ -471,8 +503,9 @@ bundle), against one Debian package and one generated file. Nor does s6 save a r
 needs, a source install updated in place, is not what upstream exercises under s6 either -- their
 image refuses `hermes update` -- whereas `--external-supervisor` is a documented contract.
 
-It would flip if Hermes profiles become a feature stores rely on, or if the phase-2 boot test shows
-supervisord mishandling status 75 or Hermes' process groups.
+It would flip if a stopped gateway staying stopped across restarts became something operators
+rely on. The phase-2 test showed supervisord handling status 75 as designed: `hermes gateway
+restart` reports "relaunched by its supervisor".
 
 **Docker as the supervisor: one compose service per program.** Same image, shared volumes,
 `restart: always`, a health check and log stream per service. Rejected because choosing a service
@@ -517,8 +550,8 @@ packages, that is a platform image change, reviewed.
   PR with no build.
 - A bad upstream release reaches stores the morning after it ships, without a CI gate. The smoke
   test and per-tool rollback bound it; Hermes' bound is a restore.
-- The platform owns supervision and the UID remap, which upstream used to own, and Hermes' own
-  profile-gateway management (runtime registration, stay-stopped across reboots) is given up.
+- The platform owns supervision and the UID remap, which upstream used to own, and a gateway an
+  operator stopped no longer stays stopped across a restart.
 - Every store's state is moved in place once (`harness-migrate-home`). It is renames on one
   filesystem with the agents stopped, reversible, and rehearsed on a copy first, but it is the
   riskiest step here, and paths inside conversation histories keep pointing at the old layout.
@@ -548,12 +581,11 @@ counted first:
    - `.hermes/.install_method` is deleted if it reads `docker`; `hermes update` refuses to run on a
      Docker-stamped home inside a container.
    - `harness-migrate-home --reverse` puts the old layout back, for the rollback below.
-3. In the config repository, one `git mv` commit to the new paths.
-4. Merge the store's compose change: the volume key `data` to `home`, keeping its `name:` (and
+3. Merge the store's compose change: the volume key `data` to `home`, keeping its `name:` (and
    adding one where the store had none -- pkm-leilei), plus the image and the `harnesses`
    volume. Stores include the shared compose file from `main`, so the contexture-images merge is
    the rollout -- as for a ctxr bump, wait for the release before `up`.
-5. `docker compose up -d`; `harness-install` populates the harnesses volume. Check
+4. `docker compose up -d`; `harness-install` populates the harnesses volume. Check
    `~/.local/state/contexture/harness-status.json`, `hermes doctor`, and every selected program
    (`harness-install status`).
 
@@ -588,16 +620,15 @@ comments only, plus each store's own `/opt/data` paths (pkm's compose comment on
    network: supervision, privilege drop, update restarts, a parallel shutdown, PUID remap, a
    configuration error) and `lib/tests/runtime-install-test.sh` (every real recipe from its
    publisher).
-2. **Hermes and the WebUI as harnesses.** Recipes, the entrypoint, the platform venv. CI boots a
-   container, installs Hermes, starts the gateway under supervisord, runs `hermes update` and
-   checks the gateway came back on the new code (status 75 relaunch), restarts the dashboard and
-   WebUI, and runs `hermes backup` and `hermes import`. `lib/tests/harness-remote-container-test.py`
-   moves from real s6-overlay to real supervisord: privilege drop, HOME and cwd, failure health,
-   one program restarting without the others, and a FATAL program failing the healthcheck.
-   `harness-backup` and `harness-config-push` run from recipes: a snapshot of a home holding
-   Hermes and claude state restores to a working Hermes (`hermes import`) and intact `.claude/`,
-   and the rendered allowlist tracks exactly today's set of files under their new paths.
-   `harness-migrate-home` runs forward and `--reverse` against a fixture in the old layout.
+2. **Hermes and the WebUI as harnesses.** *Built.* The `hermes` and `hermes-webui` recipes, the
+   recipe-driven `harness-backup` (`lib/runtime-backup.py`) and `harness-config-push`
+   (`runtime/config-push.sh`), `harness-migrate-home` (`lib/migrate-home.py`), and
+   `runtime-store-update`. Tests: `lib/tests/runtime-hermes-test.py` (Hermes from upstream, one
+   release behind the latest: boot, exit-75 relaunch, a second profile under the one gateway, the update with its
+   backup and restarts, the forward-only refusal, backup and restore, what the config repository
+   would track) and `lib/tests/migrate-home-test.py` (forward, a byte-for-byte reverse, refusals).
+   The supervision test in `runtime-container-test.py` already covers what
+   `harness-remote-container-test.py` covered under s6.
 3. **Migrate** one store (pkm-leilei first, the smallest, after rehearsing `harness-migrate-home`
    on a copy of its volume), then the rest. Retire
    `watch-agent-clis.yml` and stop building `contexture-hermes`.
@@ -612,13 +643,17 @@ Each was open in the first draft; all were checked against Hermes at `e29c42a` (
    restart or update for any supervisor to relaunch. `hermes update` does not restart the
    dashboard or WebUI under any supervisor; `harness-install` does. The update runs inside the
    agents container, which is why `harness-update` is a supervised program there.
-3. **Profiles.** Not in use (every store runs the default profile since 2026-10-23); one gateway
-   program per profile directory covers them if they return. See Alternatives, "Keep s6-overlay".
+3. **Profiles.** Not in use (every store runs the default profile since 2026-10-23), and since
+   Hermes 0.22.5 one gateway serves every profile anyway. See "One Hermes gateway serves every
+   profile".
 4. **claude's install location.** `HOME=<dir> install.sh <version>` plus a symlink, as
    `install-agent-clis.sh` already does in production.
 5. **Hermes extras.** Prepared on first use and carried across updates; nothing to prebuild.
 
-Still unknown, and only answerable by running it (phase 2's CI boot test): how long a cold Hermes
-install takes on an empty volume, and whether `stage2-hook.sh`'s first-boot seeding has a step
-`hermes update` does not repeat that our stores depend on, and whether anything in Hermes beyond the gateway --
-the dashboard's gateway controls, `hermes doctor` -- misbehaves when it finds no service manager.
+Answered by running it (2026-10-24): a cold Hermes install is about two minutes; the installer
+seeds config and runs the migration, so only `API_SERVER_KEY` and the Docker install stamp needed a
+boot hook; and with no service manager Hermes recognises the external supervisor itself
+("Restarting externally-supervised gateway ... relaunched by its supervisor"). Two things a source
+install needed that the old image hid: `libatomic1` (Hermes' pinned Node will not start without it)
+and Chromium's shared libraries, both now in the platform image. Still to see on a live store: the
+dashboard's own gateway controls, and `hermes doctor`, with no service manager.

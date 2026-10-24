@@ -49,11 +49,11 @@ class HarnessInstall(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def recipe(self, name, binary, requires=(), services=None, pinnable=True):
+    def recipe(self, name, binary, requires=(), services=None, pinnable=True, extra='', hooks=()):
         directory = self.recipes / name
         directory.mkdir()
         lines = [f'binaries = ["{binary}"]', f'requires = {json.dumps(list(requires))}',
-                 f'pinnable = {"true" if pinnable else "false"}']
+                 f'pinnable = {"true" if pinnable else "false"}', extra]
         for program, command in (services or {}).items():
             lines += [f'[services.{program}]', f'command = {json.dumps(command)}',
                       'environment = { WHERE = "${HOME}/x" }']
@@ -61,6 +61,11 @@ class HarnessInstall(unittest.TestCase):
         for script, body in (('install', INSTALL), ('latest', LATEST)):
             (directory / script).write_text(body.format(name=name, binary=binary))
             (directory / script).chmod(0o755)
+        if not (self.fake / f'latest-{name}').exists():
+            self.publish(name, '1.0.0')
+        for hook in hooks:
+            (directory / hook).write_text(f'#!/bin/sh\necho "{hook} $HARNESS_PREFIX $*" >> "$HARNESS_FAKE_DIR/hooks-{name}"\n')
+            (directory / hook).chmod(0o755)
 
     def publish(self, name, version):
         (self.fake / f'latest-{name}').write_text(version + '\n')
@@ -203,11 +208,87 @@ class HarnessInstall(unittest.TestCase):
         self.assertIn('[group:runtime]\nprograms=store-update,harness-update,gamma-web', conf,
                       'one group, so a shutdown stops every program in parallel')
 
-    def test_platform_programs_can_be_turned_off(self):
+    def test_daily_update_can_be_turned_off_but_store_update_always_runs(self):
         self.run_tool(HARNESSES='alpha', CTXR_UPDATE_STORE_ENABLED='0', HARNESS_UPDATE_INTERVAL='0')
         conf = self.programs()
-        self.assertNotIn('store-update', conf)
+        self.assertIn('command=runtime-store-update', conf, 'its hooks run even with the store update off')
         self.assertNotIn('harness-update', conf)
+
+    # --- Hermes-shaped recipes --------------------------------------------------------------------
+
+    def test_forward_only_refuses_a_pin_backwards(self):
+        self.recipe('stateful', 'stateful', extra='forward_only = true')
+        self.publish('stateful', '2.0.0')
+        self.run_tool(HARNESSES='stateful')
+        out = self.run_tool(HARNESSES='stateful', HARNESS_PINS='stateful=1.0.0')
+        self.assertIn('cannot go back from 2.0.0 to 1.0.0', out)
+        self.assertEqual(self.current('stateful'), '2.0.0')
+        self.publish('stateful', '2.1.0')
+        self.run_tool('--update', HARNESSES='stateful')
+        self.assertEqual(self.current('stateful'), '2.1.0', 'forward is fine')
+
+    def test_hooks(self):
+        self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated'))
+        self.run_tool(HARNESSES='hooked')
+        for version in ('2.0.0', '3.0.0'):
+            self.publish('hooked', version)
+            self.run_tool('--update', HARNESSES='hooked')
+        self.run_tool('hook', 'store-updated', HARNESSES='hooked')
+        calls = (self.fake / 'hooks-hooked').read_text().splitlines()
+        self.assertEqual(calls[0], f'boot {self.root}/hooked/1.0.0 ', 'boot runs with the current prefix')
+        self.assertIn(f'gc {self.root}/hooked/3.0.0 ', calls, 'gc runs after a version is pruned')
+        self.assertEqual(calls[-1], f'store-updated {self.root}/hooked/3.0.0 ')
+        self.assertEqual(sum(1 for c in calls if c.startswith('gc')), 1, 'only the update that pruned runs gc')
+
+    def test_describe_lists_installed_harnesses_with_backup_and_config(self):
+        self.recipe('kept', 'kept', extra='''
+[backup]
+covers = [".kept"]
+exclude = [".kept/cache/"]
+[config]
+root = ".kept"
+rules = "!/notes/"
+''')
+        self.run_tool(HARNESSES='kept,beta')
+        entries = {e['name']: e for e in json.loads(self.run_tool('describe', HARNESSES='kept,beta'))}
+        self.assertEqual(entries['kept']['backup'], {'covers': ['.kept'], 'exclude': ['.kept/cache/']})
+        self.assertEqual(entries['kept']['prefix'], f'{self.root}/kept/1.0.0')
+        self.assertEqual(entries['beta']['config'], {})
+
+    def test_allowlist_keeps_what_recipes_name_and_never_credentials(self):
+        self.recipe('statey', 'statey', extra='''
+[config]
+root = ".statey"
+rules = """
+!/config.yaml
+!/sessions/
+!/web/
+web/*
+!web/sessions/
+state.db
+*.log
+"""
+''')
+        self.run_tool(HARNESSES='statey')
+        out = Path(self.temporary.name) / 'allowlist'
+        self.run_tool('allowlist', str(out), HARNESSES='statey')
+        text = out.read_text().replace('@HARNESS_CONFIG_EXTENSIONS@\n', '')
+        repo = Path(self.temporary.name) / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        (repo / '.gitignore').write_text(text)
+        files = {'.statey/config.yaml': False, '.statey/sessions/a.json': False, '.statey/state.db': True,
+                 '.statey/sessions/run.log': True, '.statey/web/sessions/x.json': False,
+                 '.statey/web/other.json': True, '.statey/logs/x': True, '.statey/.env': True,
+                 '.statey/sessions/auth.json': True, '.other/keep.txt': True, 'stray.txt': True,
+                 '.config/gh/hosts.yml': True}
+        for path in files:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text('x')
+        for path, ignored in files.items():
+            with self.subTest(path=path):
+                result = subprocess.run(['git', '-C', str(repo), 'check-ignore', '-q', path])
+                self.assertEqual(result.returncode == 0, ignored, f'{path} ignored={not ignored} expected {ignored}')
 
     def test_service_of_a_failed_harness_is_skipped_and_reported(self):
         (self.fake / 'fail-alpha').touch()

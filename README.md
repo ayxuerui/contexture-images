@@ -594,6 +594,10 @@ runtime/supervisord.conf              the supervisor; its programs are rendered 
 lib/harness-install.py                shipped as `harness-install`: installs, updates and supervises harnesses
 lib/harnesses/<name>/                 one recipe per harness: recipe.toml, install, latest
 lib/install-node.sh                   Node 24 from nodejs.org, hashes pinned here
+lib/runtime-backup.py                 shipped as `harness-backup` there: the home to restic, via recipe snapshots; restore
+runtime/config-push.sh                shipped as `harness-config-push` there: lib/config-push.sh, allowlist from recipes
+lib/migrate-home.py                   shipped as `harness-migrate-home`: a Hermes-image volume into a runtime home, and back
+runtime/store-update.sh               shipped as `runtime-store-update`: store update, then the harnesses' hooks
 ```
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow

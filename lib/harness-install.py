@@ -9,6 +9,9 @@ See docs/design/harnesses-in-home.md for the design this implements.
     harness-install --update   move each harness to the newest version its pin allows
     harness-install status     exit 0 only when every harness is installed and every program runs
     harness-install check      validate the three variables against the recipes; install nothing
+    harness-install hook NAME  run every installed harness's NAME hook (store-updated, ...)
+    harness-install describe   JSON: each installed harness's recipe, backup and config entries
+    harness-install allowlist PATH   render the config repository's allowlist from the recipes
 
 What a container has is three compose variables, never a file in the home:
 
@@ -43,6 +46,7 @@ ROOT = Path(os.environ.get('HARNESS_ROOT', '/opt/harnesses'))
 RECIPES = Path(os.environ.get('HARNESS_RECIPES', '/usr/local/share/contexture/harnesses'))
 RUN_DIR = Path(os.environ.get('HARNESS_RUN_DIR', '/run/harness'))
 PROGRAMS_CONF = RUN_DIR / 'programs.conf'
+PROGRAMS_INDEX = RUN_DIR / 'programs.json'
 # Every program is rendered into this one supervisor group. supervisord stops groups one after
 # another but signals every process in a group in the same pass, so one group is what makes a
 # shutdown parallel: three remote sessions each given harness-remote's 8 seconds to exit would
@@ -105,6 +109,18 @@ class Recipe:
         # publisher serves, and a mismatch warns instead of failing.
         self.pinnable = bool(data.get('pinnable', True))
         self.rebuild_on = list(data.get('rebuild_on', []))
+        # True when a newer version migrates state an older one cannot read (Hermes' state.db):
+        # a pin to an older version is refused, because going back is a restore, not a flip.
+        self.forward_only = bool(data.get('forward_only', False))
+        # Harnesses whose update must restart this one's programs too: the WebUI runs Hermes'
+        # code in-process, so a Hermes update restarts it.
+        self.restart_with = list(data.get('restart_with', []))
+        # What harness-backup and harness-config-push do with this harness's state.
+        self.backup = dict(data.get('backup', {}))
+        self.config = dict(data.get('config', {}))
+        for key in ('snapshot', 'restore'):
+            if key in self.backup:
+                self.script(self.backup[key])
         self.services = {}
         for program, spec in data.get('services', {}).items():
             command = spec.get('command')
@@ -121,6 +137,14 @@ class Recipe:
         if not os.access(path, os.X_OK):
             raise ConfigError(f'recipe {self.name} has no executable {name}')
         return path
+
+    def hook(self, name):
+        path = self.directory / name
+        return path if os.access(path, os.X_OK) else None
+
+
+def version_key(version):
+    return tuple(int(part) for part in re.findall(r'\d+', version)[:4])
 
 
 def load_recipes():
@@ -266,10 +290,12 @@ def flip(name, version, earlier=None):
     os.replace(temporary, directory / 'current')
     kept = previous if previous and previous != version else earlier
     keep = {version, kept, 'current'}
+    pruned = []
     for entry in directory.iterdir():
         if entry.name not in keep and not entry.name.startswith('.') and entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry, ignore_errors=True)
-    return previous, kept
+            pruned.append(entry.name)
+    return previous, kept, pruned
 
 
 def link_binaries(recipes, selected):
@@ -289,10 +315,28 @@ def link_binaries(recipes, selected):
             os.symlink(target, link)
 
 
+def run_hook(recipe, name, *args):
+    """Run a recipe's optional hook with the current version's prefix; a failure is logged."""
+    path = recipe.hook(name)
+    if not path:
+        return True
+    current = current_version(recipe.name)
+    environment = dict(os.environ, HARNESS_RECIPE_DIR=str(recipe.directory),
+                       HARNESS_PREFIX=str(ROOT / recipe.name / current) if current else '')
+    result = subprocess.run([str(path), *args], env=environment, timeout=1800)
+    if result.returncode != 0:
+        log(f'{recipe.name}: {name} hook exited {result.returncode}')
+    return result.returncode == 0
+
+
 def bring_to(recipe, target, state, facts):
     """Make `target` current, installing it unless an intact copy is already on disk."""
     name = recipe.name
     record = state.get(name)
+    current = current_version(name)
+    if recipe.forward_only and current and version_key(target) < version_key(current):
+        raise RuntimeError(f'{name} cannot go back from {current} to {target}: a newer version has '
+                           f'migrated its state. Going back is a restore (see the recipe), not a pin')
     prefix = ROOT / name / target
     rebuild = needs_rebuild(recipe, record, facts) and target == current_version(name)
     if rebuild or not valid(recipe, prefix):
@@ -301,7 +345,10 @@ def bring_to(recipe, target, state, facts):
         reported = install(recipe, target)
     else:
         reported = (record or {}).get('reported', target) if target == current_version(name) else target
-    moved_from, kept = flip(name, target, (record or {}).get('previous'))
+    moved_from, kept, pruned = flip(name, target, (record or {}).get('previous'))
+    if pruned:
+        log(f'{name}: removed {", ".join(pruned)}')
+        run_hook(recipe, 'gc')
     state[name] = {'version': target, 'reported': reported, 'previous': kept,
                    'platform': {fact: facts.get(fact) for fact in recipe.rebuild_on},
                    'installed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
@@ -313,9 +360,10 @@ def bring_to(recipe, target, state, facts):
 # Programs the platform itself runs, beside whatever HARNESS_SERVICES selects.
 PLATFORM_PROGRAMS = {
     # Once per container start, never restarted, never failing the boot: what the s6 store-update
-    # service did with `finish` exiting 125. See lib/update-store.sh.
-    'store-update': {'command': ['ctxr-update-store'], 'oneshot': True,
-                     'enabled': lambda: os.environ.get('CTXR_UPDATE_STORE_ENABLED', '1').strip().lower() not in FALSE},
+    # service did with `finish` exiting 125. Always rendered: runtime/store-update.sh reads
+    # CTXR_UPDATE_STORE_ENABLED for the store update itself, and runs the harnesses'
+    # store-updated hooks either way, as the s6 service ran the Circleback install either way.
+    'store-update': {'command': ['runtime-store-update'], 'oneshot': True, 'enabled': lambda: True},
     # The daily update, in this container because it restarts this container's programs.
     'harness-update': {'command': ['harness-schedule', 'harness-install', '--update'], 'oneshot': False,
                        'environment': {'HARNESS_SCHEDULE_INTERVAL': '${HARNESS_UPDATE_INTERVAL}',
@@ -325,10 +373,12 @@ PLATFORM_PROGRAMS = {
 }
 
 
-def expand(value):
+def expand(value, extra=None):
     environment = dict(os.environ)
     environment.setdefault('HARNESS_UPDATE_INTERVAL', '86400')
     environment.setdefault('HOME', str(home()))
+    environment['HARNESS_ROOT'] = str(ROOT)
+    environment.update(extra or {})
     return string.Template(value).safe_substitute(environment)
 
 
@@ -339,11 +389,11 @@ def supervisor_value(value):
     return value.replace('%', '%%')
 
 
-def program_block(program, spec, oneshot):
-    command = shlex.join(expand(part) for part in spec['command'])
+def program_block(program, spec, oneshot, extra=None):
+    command = shlex.join(expand(part, extra) for part in spec['command'])
     lines = [f'[program:{program}]',
              f'command={supervisor_value(command)}',
-             f'directory={supervisor_value(expand(spec.get("directory", "${HOME}")))}',
+             f'directory={supervisor_value(expand(spec.get("directory", "${HOME}"), extra))}',
              'autostart=true',
              'stdout_logfile=/dev/stdout', 'stdout_logfile_maxbytes=0', 'redirect_stderr=true',
              'stopasgroup=true', 'killasgroup=true', 'stopwaitsecs=10']
@@ -354,7 +404,7 @@ def program_block(program, spec, oneshot):
         # expects to be relaunched. A program that cannot stay up for startsecs, three times in a
         # row, goes FATAL -- reported by `harness-install status` rather than looping unseen.
         lines += ['autorestart=true', 'startsecs=5', 'startretries=3']
-    environment = {key: expand(value) for key, value in spec.get('environment', {}).items()}
+    environment = {key: expand(value, extra) for key, value in spec.get('environment', {}).items()}
     if environment:
         pairs = ','.join(f'{key}="{supervisor_value(value)}"' for key, value in sorted(environment.items()))
         lines.append('environment=' + pairs)
@@ -362,7 +412,7 @@ def program_block(program, spec, oneshot):
 
 
 def render(recipes, services, offered, installed):
-    blocks, rendered, skipped = [], [], []
+    blocks, rendered, skipped, owners = [], [], [], {}
     for program, spec in PLATFORM_PROGRAMS.items():
         if spec['enabled']():
             blocks.append(program_block(program, spec, spec['oneshot']))
@@ -372,8 +422,11 @@ def render(recipes, services, offered, installed):
         if owner not in installed:
             skipped.append(program)
             continue
-        blocks.append(program_block(program, recipes[owner].services[program], False))
+        spec = recipes[owner].services[program]
+        extra = {'HARNESS_RECIPE_DIR': str(recipes[owner].directory)}
+        blocks.append(program_block(program, spec, False, extra))
         rendered.append(program)
+        owners[program] = owner
     if rendered:
         blocks.append(f'[group:{GROUP}]\nprograms={",".join(rendered)}\n')
     RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -381,6 +434,7 @@ def render(recipes, services, offered, installed):
     temporary.write_text('# Generated by harness-install at boot. Do not edit: it is rewritten every start.\n\n'
                          + '\n'.join(blocks))
     os.replace(temporary, PROGRAMS_CONF)
+    PROGRAMS_INDEX.write_text(json.dumps(owners, indent=2, sort_keys=True) + '\n')
     return rendered, skipped
 
 
@@ -444,13 +498,18 @@ def converge(update, only=()):
         installed = {name for name in selected if current_version(name)}
         if update:
             if supervisor_running():
+                owners = read_owners()
                 for name in changed:
-                    programs = [p for p in services if offered[p] == name]
+                    programs = sorted(p for p, owner in owners.items()
+                                      if owner == name or name in recipes[owner].restart_with)
                     if programs:
                         log(f'{name}: restarting {", ".join(programs)}')
                         supervisorctl('restart', *(f'{GROUP}:{p}' for p in programs))
             rendered, skipped = read_rendered(), []
         else:
+            for name in selected:
+                if name in installed:
+                    run_hook(recipes[name], 'boot')
             rendered, skipped = render(recipes, services, offered, installed)
             for program in skipped:
                 log(f'{program}: not started, because {offered[program]} is not installed')
@@ -458,6 +517,13 @@ def converge(update, only=()):
         report['skipped_programs'] = skipped
         write_status(report)
         return report
+
+
+def read_owners():
+    try:
+        return json.loads(PROGRAMS_INDEX.read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 def read_rendered():
@@ -501,7 +567,110 @@ def status():
     return 0 if healthy else 1
 
 
+def installed_recipes():
+    recipes, selected, _, _, _ = configuration()
+    return [recipes[name] for name in selected if current_version(name)]
+
+
+def describe():
+    entries = []
+    for recipe in installed_recipes():
+        entries.append({'name': recipe.name, 'recipe_dir': str(recipe.directory),
+                        'prefix': str(ROOT / recipe.name / current_version(recipe.name)),
+                        'backup': recipe.backup, 'config': recipe.config})
+    print(json.dumps(entries, indent=2))
+    return 0
+
+
+def allowlist_rules(root, rules):
+    """Rewrite one recipe's gitignore rules, relative to its state directory, to the home.
+
+    A rule naming a path (`/x`, `a/b`, `!/x`) is anchored, so it gets the root prepended. A bare
+    name (`state.db`, `*.log`, `logs/`) matches at any depth and is left as it is."""
+    lines = []
+    for raw in rules.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or line.startswith('@'):
+            lines.append(line)
+            continue
+        negate = line.startswith('!')
+        body = line[1:] if negate else line
+        anchored = body.startswith('/') or '/' in body.rstrip('/')
+        if anchored:
+            body = f'/{root}/{body.lstrip("/")}'
+        lines.append(('!' if negate else '') + body)
+    return lines
+
+
+def allowlist(path):
+    """The config repository's .gitignore source: an allowlist built from the recipes.
+
+    Same contract as harnesses/hermes/hermes-config.gitignore, which this replaces in the runtime
+    image: everything at the root is ignored, each harness re-opens its own state directory and
+    then says what in it is kept, and the credential denylist comes last so it always wins.
+    harness-config-push fills @HARNESS_CONFIG_EXTENSIONS@ and @HARNESS_CONFIG_BUNDLED_SKILLS@."""
+    lines = ['# harness-config-push managed allowlist v2 -- rendered from the harness recipes by',
+             '# `harness-install allowlist`. DO NOT EDIT: per-store rules go in HARNESS_CONFIG_INCLUDE',
+             '# and HARNESS_CONFIG_EXCLUDE.', '', '/*', '!/.gitignore', '!/README.md']
+    for recipe in installed_recipes():
+        root = recipe.config.get('root', '').strip('/')
+        rules = recipe.config.get('rules', '')
+        if not root:
+            continue
+        lines += ['', f'# --- {recipe.name} ({root}/) ---', f'!/{root}/', f'/{root}/*']
+        lines += allowlist_rules(root, rules)
+    lines += ['', '@HARNESS_CONFIG_EXTENSIONS@', '', '# --- never, whoever re-opened it ---']
+    lines += [line.strip() for line in CREDENTIALS.strip().splitlines()]
+    Path(path).write_text('\n'.join(lines) + '\n')
+    return 0
+
+
+# Basenames and paths that are credentials wherever they appear; last in the allowlist, so no
+# recipe and no HARNESS_CONFIG_INCLUDE can re-open them. The same set as hermes-config.gitignore,
+# with home/ dropped now that the home is the repository root.
+CREDENTIALS = '''
+.env
+.env.*
+!.env.example
+auth.json
+auth.lock
+.git-credentials
+.netrc
+.npmrc
+google_token.json
+google_client_secret.json
+google_oauth_pending.json
+google_oauth_last_url.txt
+mcp-tokens/
+.credentials.json
+oauth_creds.json
+google_accounts.json
+antigravity-oauth-token
+hosts.yml
+rclone.conf
+/.config/rclone/
+restic-password
+.restic-password
+.restic-password.*
+*.pem
+id_rsa
+id_ed25519
+*.key
+*_key
+.signing_key
+.pbkdf2_key
+/.ssh/
+'''
+
+
 def main(argv):
+    if argv[:1] == ['hook'] and len(argv) == 2:
+        ok = all([run_hook(recipe, argv[1]) for recipe in installed_recipes()])
+        return 0 if ok else 1
+    if argv[:1] == ['describe']:
+        return describe()
+    if argv[:1] == ['allowlist'] and len(argv) == 2:
+        return allowlist(argv[1])
     if argv[:1] == ['status']:
         return status()
     if argv[:1] == ['check']:
@@ -514,7 +683,8 @@ def main(argv):
     if argv[:1] == ['--update']:
         converge(update=True, only=tuple(argv[1:]))
         return 0
-    print('usage: harness-install [--boot | --update [NAME...] | status | check]', file=sys.stderr)
+    print('usage: harness-install [--boot | --update [NAME...] | status | check | hook NAME | describe | allowlist PATH]',
+          file=sys.stderr)
     return 2
 
 
