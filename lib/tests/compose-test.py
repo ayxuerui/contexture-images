@@ -189,10 +189,13 @@ class Runtime(unittest.TestCase):
     def test_a_store_moves_by_renaming_the_volume_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = Path(temporary)
+            # The override in its own file: Compose before v5 refuses a service or volume declared
+            # beside an `include` that also defines it ("conflicts with imported resource").
             (store / 'compose.yaml').write_text(f'''name: pkm-leilei
 include:
   - {RUNTIME}
-services:
+''')
+            (store / 'compose.override.yaml').write_text('''services:
   agents:
     container_name: pkm-leilei-agents
 volumes:
