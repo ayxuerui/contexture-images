@@ -72,7 +72,8 @@ def program_pid(name, program):
 
 
 def healthy(name):
-    return agent(name, 'harness-install', 'status', check=False).returncode == 0
+    # As root, with no -u: that is how Docker runs a healthcheck, HOME=/root and all.
+    return docker('exec', name, 'harness-install', 'status', check=False).returncode == 0
 
 
 def cleanup(name):

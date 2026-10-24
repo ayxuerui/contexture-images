@@ -11,6 +11,7 @@ See docs/design/harnesses-in-home.md for the design this implements.
     harness-install check      validate the three variables against the recipes; install nothing
     harness-install hook NAME  run every installed harness's NAME hook (store-updated, ...)
     harness-install describe   JSON: each installed harness's recipe, backup and config entries
+    harness-install wait       block until every selected harness is installed and no install runs
     harness-install allowlist PATH   render the config repository's allowlist from the recipes
 
 What a container has is three compose variables, never a file in the home:
@@ -73,7 +74,10 @@ def home():
 
 
 def status_file():
-    return home() / '.local' / 'state' / 'contexture' / 'harness-status.json'
+    # Fixed by the image (HARNESS_STATUS_FILE), not derived from HOME: Docker runs the healthcheck
+    # as root, whose HOME is /root, and `status` must read the agent's file all the same.
+    configured = os.environ.get('HARNESS_STATUS_FILE')
+    return Path(configured) if configured else home() / '.local' / 'state' / 'contexture' / 'harness-status.json'
 
 
 def names(variable):
@@ -593,6 +597,39 @@ def installed_recipes():
     return [recipes[name] for name in selected if current_version(name)]
 
 
+def wait():
+    """Block until every harness in HARNESSES is installed and no install holds the lock.
+
+    For the backup jobs, which run in their own containers and work from the installed recipes: on
+    a store's first boot the agents container is still installing when the schedulers make their
+    startup run, and a backup or config push then would see no Hermes -- snapshotting ~/.hermes file
+    by file while its runtime downloads, and untracking its config. HARNESS_WAIT_SECONDS (default
+    1800) bounds it; past that it fails, naming what is missing."""
+    deadline = time.monotonic() + int(os.environ.get('HARNESS_WAIT_SECONDS', '1800'))
+    announced = False
+    while True:
+        _, selected, _, _, _ = configuration()
+        missing = [name for name in selected if not current_version(name)]
+        busy = False
+        try:
+            with open(ROOT / '.lock') as handle:  # read-only: the backup jobs mount the volume :ro
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    busy = True
+        except FileNotFoundError:
+            pass
+        if not missing and not busy:
+            return 0
+        if time.monotonic() >= deadline:
+            log('gave up waiting: ' + (f'not installed: {", ".join(missing)}' if missing else 'an install is still running'))
+            return 1
+        if not announced:
+            log('waiting for ' + (f'{", ".join(missing)} to be installed' if missing else 'an install to finish'))
+            announced = True
+        time.sleep(10)
+
+
 def describe():
     entries = []
     for recipe in installed_recipes():
@@ -706,6 +743,8 @@ def main(argv):
     if argv[:1] == ['hook'] and len(argv) == 2:
         ok = all([run_hook(recipe, argv[1]) for recipe in installed_recipes()])
         return 0 if ok else 1
+    if argv[:1] == ['wait']:
+        return wait()
     if argv[:1] == ['describe']:
         return describe()
     if argv[:1] == ['allowlist'] and len(argv) == 2:

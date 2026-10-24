@@ -154,7 +154,8 @@ RUN set -eux; \
 # the platform python. DISABLE_AUTOUPDATER keeps claude from rewriting itself; harness-install is
 # the one writer of /opt/harnesses.
 ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/harnesses/bin \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    HARNESS_STATUS_FILE=/home/agent/.local/state/contexture/harness-status.json
 
 # Every recipe parses, and the full selection -- what the shared compose file will default to --
 # is consistent with them.

@@ -8,6 +8,9 @@
 # says what of it to keep. Everything config-push.sh guards -- a public remote, a staged
 # credential, an oversized blob -- it still guards.
 set -eu
+# The allowlist comes from the installed harnesses' recipes. On a first boot the agents container
+# is still installing when this runs; pushing then would untrack every harness's config.
+harness-install wait
 allowlist="$(mktemp)"
 trap 'rm -f "${allowlist}"' EXIT
 harness-install allowlist "${allowlist}"
