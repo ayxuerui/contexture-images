@@ -384,9 +384,9 @@ fi
 
 home_git commit -q -m "${HARNESS_CONFIG_MESSAGE:-auto: harness config} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$_fresh" -eq 1 ]; then
-  home_git push -q -u origin "$BRANCH"
+  home_git -c pack.threads=1 -c pack.windowMemory=128m push -q -u origin "$BRANCH"
 else
-  home_git push -q origin "$BRANCH"
+  home_git -c pack.threads=1 -c pack.windowMemory=128m push -q origin "$BRANCH"
 fi
 log "pushed $(home_git rev-parse --short HEAD) to ${HARNESS_CONFIG_REPO} (${BRANCH})"
 

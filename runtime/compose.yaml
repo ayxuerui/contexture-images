@@ -64,6 +64,9 @@ x-approval-env: &approval-env
 x-config-env: &config-env
   <<: *harness-home
   HARNESS_CONFIG_REPO: ${HARNESS_CONFIG_REPO:-}
+  # A store's own keeps and ignores, whitespace-separated, home-relative (`.hermes/plugins/x/`).
+  HARNESS_CONFIG_INCLUDE: ${HARNESS_CONFIG_INCLUDE:-}
+  HARNESS_CONFIG_EXCLUDE: ${HARNESS_CONFIG_EXCLUDE:-}
 
 services:
   # One-off provisioning: clone the store into the store volume and persist the gh credential in

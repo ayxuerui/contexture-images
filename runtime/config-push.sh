@@ -26,6 +26,9 @@ for entry in json.load(sys.stdin):
         break
 ')"
 
+# HARNESS_CONFIG_INCLUDE is already in the allowlist (harness-install renders it knowing which
+# directories are recipe roots); config-push.sh's own renderer would re-close those roots after it.
+HARNESS_CONFIG_INCLUDE= \
 HERMES_DATA_DIR="${HOME}" \
 HARNESS_CONFIG_HOME="${HOME}" \
 HARNESS_CONFIG_GITIGNORE_SRC="${allowlist}" \

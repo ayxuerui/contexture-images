@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Write ~/.hermes as a `hermes backup` archive into the directory given, and check it.
 
+An archive `hermes backup` reports incomplete (exit 1: some files could not be added) is accepted
+if it passes the checks below, with the skipped files logged.
+
 The checks are harness-backup.sh's: a locked SQLite source makes `hermes backup` skip the file and
 still exit 0, so an archive is only accepted with config.yaml and a state.db that is a real,
 non-zeroed SQLite database.
@@ -18,8 +21,20 @@ home = Path(os.environ['HOME']) / '.hermes'
 if not (home / 'state.db').exists():
     print('hermes: no state.db yet, nothing to snapshot')
     sys.exit(0)
-subprocess.run(['hermes', 'backup', '-o', str(archive)], check=True,
-               env=dict(os.environ, HERMES_HOME=str(home)))
+# `hermes backup` exits 1 for "incomplete": it kept the archive but could not add some files -- one
+# it may not read, or one deleted mid-run (telemetry, a lock). Older Hermes skipped those silently
+# with exit 0. The archive is judged here instead, by the checks below; any other exit fails.
+result = subprocess.run(['hermes', 'backup', '-o', str(archive)], capture_output=True, text=True,
+                        env=dict(os.environ, HERMES_HOME=str(home)))
+sys.stdout.write(result.stdout[-4000:])
+if result.returncode == 1 and archive.exists():
+    skipped = [line.strip() for line in result.stdout.splitlines() if ': [Errno' in line]
+    print(f'hermes: WARNING: archive incomplete, {len(skipped)} file(s) not added; checking what it holds')
+    for line in skipped[:20]:
+        print('hermes:   ' + line)
+elif result.returncode != 0:
+    sys.stderr.write(result.stderr[-4000:])
+    sys.exit(f'hermes: `hermes backup` exited {result.returncode}')
 with zipfile.ZipFile(archive) as zf:
     names = set(zf.namelist())
     missing = [n for n in ('config.yaml', 'state.db') if n not in names]

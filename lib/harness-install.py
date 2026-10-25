@@ -677,10 +677,39 @@ def allowlist(path):
             continue
         lines += ['', f'# --- {recipe.name} ({root}/) ---', f'!/{root}/', f'/{root}/*']
         lines += allowlist_rules(root, rules)
+    lines += include_rules({recipe.config.get('root', '').strip('/') for recipe in installed_recipes()})
     lines += ['', '@HARNESS_CONFIG_EXTENSIONS@', '', '# --- never, whoever re-opened it ---']
     lines += [line.strip() for line in CREDENTIALS.strip().splitlines()]
     Path(path).write_text('\n'.join(lines) + '\n')
     return 0
+
+
+def include_rules(roots):
+    """A store's own keeps (HARNESS_CONFIG_INCLUDE), rendered here rather than by config-push.sh.
+
+    Its renderer re-opens each ancestor of an included path and then closes the ancestor's contents
+    again (`!/a/` then `a/*`), which is right when the ancestor was closed already -- the old layout,
+    where every ancestor was a closed root entry. Under the home, an ancestor can be a recipe's root
+    (.hermes), and re-closing it after the recipe's block untracks everything the recipe kept: on
+    pkm, one push of `.hermes/plugins/...` dropped SOUL.md, config.yaml and every session. So an
+    ancestor that is a recipe's root is re-opened without being re-closed."""
+    lines, seen = [], set()
+    for entry in names_ws('HARNESS_CONFIG_INCLUDE'):
+        parts = entry.strip('/').split('/')
+        for depth in range(1, len(parts)):
+            ancestor = '/'.join(parts[:depth])
+            if ancestor in seen:
+                continue
+            seen.add(ancestor)
+            lines.append(f'!/{ancestor}/')
+            if ancestor not in roots:
+                lines.append(f'/{ancestor}/*')
+        lines.append(f'!/{entry.lstrip("/")}')
+    return (['', '# --- this store\'s own (HARNESS_CONFIG_INCLUDE) ---'] + lines) if lines else []
+
+
+def names_ws(variable):
+    return os.environ.get(variable, '').split()
 
 
 # Basenames and paths that are credentials wherever they appear; last in the allowlist, so no
