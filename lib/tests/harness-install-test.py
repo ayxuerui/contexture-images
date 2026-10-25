@@ -264,6 +264,37 @@ probe = "http://127.0.0.1:${PORTED_PORT:-9000}/"
             fcntl.flock(handle, fcntl.LOCK_EX)
             self.assertIn('an install is still running', self.run_tool('wait', expect=1, HARNESSES='alpha', HARNESS_WAIT_SECONDS='0'))
 
+    def test_an_include_under_a_recipe_root_keeps_what_the_recipe_kept(self):
+        # pkm, 2026-10-25: HARNESS_CONFIG_INCLUDE=.hermes/plugins/... re-closed .hermes/ after the
+        # Hermes recipe's block and one push untracked SOUL.md, config.yaml and every session.
+        self.recipe('statey', 'statey', extra='''
+[config]
+root = ".statey"
+rules = """
+!/config.yaml
+!/plugins/
+plugins/*
+"""
+''')
+        self.run_tool(HARNESSES='statey')
+        out = Path(self.temporary.name) / 'allowlist'
+        self.run_tool('allowlist', str(out), HARNESSES='statey',
+                      HARNESS_CONFIG_INCLUDE='.statey/plugins/mine/ .other/ext/manifest.json')
+        repo = Path(self.temporary.name) / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        (repo / '.gitignore').write_text(out.read_text().replace('@HARNESS_CONFIG_EXTENSIONS@\n', ''))
+        files = {'.statey/config.yaml': False, '.statey/plugins/mine/plugin.py': False,
+                 '.statey/plugins/theirs/plugin.py': True, '.other/ext/manifest.json': False,
+                 '.other/ext/other.json': True, '.statey/plugins/mine/.env': True}
+        for path in files:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text('x')
+        for path, ignored in files.items():
+            with self.subTest(path=path):
+                result = subprocess.run(['git', '-C', str(repo), 'check-ignore', '-q', path])
+                self.assertEqual(result.returncode == 0, ignored, f'{path}: expected ignored={ignored}')
+
     def test_hooks(self):
         self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated'))
         self.run_tool(HARNESSES='hooked')
