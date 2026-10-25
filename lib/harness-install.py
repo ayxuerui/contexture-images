@@ -527,6 +527,10 @@ def converge(update, only=()):
                     if programs:
                         log(f'{name}: restarting {", ".join(programs)}')
                         supervisorctl('restart', *(f'{GROUP}:{p}' for p in programs))
+            # After the flip and the restarts: what a new version needs done once it is in use --
+            # ctxr's is the store update, which a new ctxr may need before it will read the store.
+            for name in changed:
+                run_hook(recipes[name], 'updated')
             rendered, skipped = read_rendered(), []
         else:
             for name in selected:

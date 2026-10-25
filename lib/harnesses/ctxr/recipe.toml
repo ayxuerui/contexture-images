@@ -1,0 +1,19 @@
+# The Contexture CLI (ctxr-cli, from npm), as the agents run it: updated in place with the other
+# harnesses, so a new ctxr reaches a store without an image release.
+#
+# Two ctxr exist on purpose. The image keeps its own (the image tag is its version) for what must
+# never run code the agent can write: `serve`, which holds the store's approval App key, and the
+# one-shots that start without the harnesses volume (workspace-init). It sits at the END of PATH,
+# so where this recipe's ctxr is installed -- the agents container -- this one is the ctxr in use.
+#
+# They may differ by releases, never by schema. A store's schema_version gates every ctxr in both
+# directions (src/config/load.ts), so a ctxr that moved the store's schema past what the image's
+# ctxr supports would leave `serve` refusing the store. `install` therefore refuses a release whose
+# SUPPORTED_SCHEMA_VERSION is above the image's: that release waits for the image, which carries
+# serve along with it. (The schema has been 10 from 0.20.0 to 0.34.0; ctxr ships almost daily.)
+#
+# Forward only: an older ctxr's `update` deletes managed skills it does not know, so a pin back is
+# refused, as it is for Hermes.
+binaries = ["ctxr"]
+forward_only = true
+rebuild_on = ["node-major"]

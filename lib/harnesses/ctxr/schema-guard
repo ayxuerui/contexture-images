@@ -1,0 +1,17 @@
+#!/bin/sh
+# schema-guard NEW_SCHEMA_JS IMAGE_SCHEMA_JS
+#
+# Exit 0 when the newly installed ctxr reads no store schema above the image's ctxr, the one serve
+# runs; exit 1, saying why, when it does. An unreadable NEW is refused (the install cannot prove it
+# is safe); an unreadable IMAGE allows it (an image without ctxr has no serve to hold back).
+set -eu
+[ "$#" -eq 2 ] || { echo "schema-guard: usage: schema-guard NEW_SCHEMA_JS IMAGE_SCHEMA_JS" >&2; exit 2; }
+schema() { sed -n 's/^export const SUPPORTED_SCHEMA_VERSION = \([0-9][0-9]*\);$/\1/p' "$1" 2>/dev/null || true; }
+new="$(schema "$1")"
+image="$(schema "$2")"
+[ -n "${new}" ] || { echo "ctxr: cannot read SUPPORTED_SCHEMA_VERSION from $1; refusing this release" >&2; exit 1; }
+if [ -n "${image}" ] && [ "${new}" -gt "${image}" ]; then
+  echo "ctxr: ${HARNESS_VERSION:-this release} reads store schema ${new}; the image's ctxr (serve) reads ${image}." >&2
+  echo "ctxr: it waits for an image release, so serve and the store move together." >&2
+  exit 1
+fi

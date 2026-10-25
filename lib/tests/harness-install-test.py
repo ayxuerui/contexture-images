@@ -296,7 +296,7 @@ plugins/*
                 self.assertEqual(result.returncode == 0, ignored, f'{path}: expected ignored={ignored}')
 
     def test_hooks(self):
-        self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated'))
+        self.recipe('hooked', 'hooked', hooks=('boot', 'gc', 'store-updated', 'updated'))
         self.run_tool(HARNESSES='hooked')
         for version in ('2.0.0', '3.0.0'):
             self.publish('hooked', version)
@@ -307,6 +307,12 @@ plugins/*
         self.assertIn(f'gc {self.root}/hooked/3.0.0 ', calls, 'gc runs after a version is pruned')
         self.assertEqual(calls[-1], f'store-updated {self.root}/hooked/3.0.0 ')
         self.assertEqual(sum(1 for c in calls if c.startswith('gc')), 1, 'only the update that pruned runs gc')
+        updated = [c for c in calls if c.startswith('updated')]
+        self.assertEqual(updated, [f'updated {self.root}/hooked/2.0.0 ', f'updated {self.root}/hooked/3.0.0 '],
+                         'updated runs after each update that moved the version, with the new prefix')
+        self.run_tool('--update', HARNESSES='hooked')
+        self.assertEqual(sum(1 for c in (self.fake / 'hooks-hooked').read_text().splitlines() if c.startswith('updated')), 2,
+                         'an update that changes nothing runs no updated hook')
 
     def test_describe_lists_installed_harnesses_with_backup_and_config(self):
         self.recipe('kept', 'kept', extra='''

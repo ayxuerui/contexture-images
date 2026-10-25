@@ -160,7 +160,7 @@ class Runtime(unittest.TestCase):
         self.assertIsNone(agents.get('entrypoint'))  # tini + the runtime entrypoint
         self.assertIsNone(agents.get('command'))
         env = agents['environment']
-        self.assertEqual(env['HARNESSES'], 'hermes,hermes-webui,claude,codex,agy,agent-browser,cb')
+        self.assertEqual(env['HARNESSES'], 'ctxr,hermes,hermes-webui,claude,codex,agy,agent-browser,cb')
         self.assertEqual(env['HARNESS_SERVICES'], 'hermes-gateway,hermes-dashboard,hermes-webui')
         self.assertEqual(env['HARNESS_PINS'], '')
         for retired in ('HERMES_DASHBOARD', 'HERMES_WEBUI_ENABLED', 'HARNESS_REMOTE_AGENTS', 'HERMES_HOME'):

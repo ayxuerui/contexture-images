@@ -28,7 +28,7 @@ x-image: &image ghcr.io/ayxuerui/contexture-runtime:0.33.0
 # merge; a store's .env or override changes only what it wants different. The backup jobs read
 # them too: harness-backup and harness-config-push work from the selected harnesses' recipes.
 x-harness-selection: &harness-selection
-  HARNESSES: ${HARNESSES:-hermes,hermes-webui,claude,codex,agy,agent-browser,cb}
+  HARNESSES: ${HARNESSES:-ctxr,hermes,hermes-webui,claude,codex,agy,agent-browser,cb}
   HARNESS_SERVICES: ${HARNESS_SERVICES:-hermes-gateway,hermes-dashboard,hermes-webui}
   HARNESS_PINS: ${HARNESS_PINS:-}
 

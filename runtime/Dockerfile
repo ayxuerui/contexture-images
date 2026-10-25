@@ -71,6 +71,16 @@ ARG CTXR_VERSION
 COPY lib/install-contexture-toolchain.sh /tmp/install-contexture-toolchain.sh
 RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
 
+# The image's ctxr is the fallback, not the first: it moves from /usr/local/bin to the END of PATH.
+# In the agents container the `ctxr` harness (lib/harnesses/ctxr) is installed and updated in place
+# and so wins; `serve` and the one-shots, which never mount the agent-writable harnesses volume,
+# fall through to this one. See lib/harnesses/ctxr/recipe.toml for why there are two.
+RUN set -eux; \
+    install -d /usr/local/lib/contexture/bin; \
+    ln -s /usr/local/lib/node_modules/ctxr-cli/dist/bin.js /usr/local/lib/contexture/bin/ctxr; \
+    rm /usr/local/bin/ctxr; \
+    /usr/local/lib/contexture/bin/ctxr --version
+
 # --- Backup and skill tools ------------------------------------------------------------------
 ARG RESTIC_VERSION=0.19.1
 ARG RCLONE_VERSION=1.75.1
@@ -150,16 +160,17 @@ RUN set -eux; \
       /usr/local/bin/harness-install /usr/local/bin/harness-remote /usr/local/bin/harness-backup \
       /usr/local/bin/harness-migrate-home
 
-# Platform first, the agent-writable /opt/harnesses/bin last: a harness never shadows ctxr, gh or
-# the platform python. DISABLE_AUTOUPDATER keeps claude from rewriting itself; harness-install is
-# the one writer of /opt/harnesses.
-ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/harnesses/bin \
+# Platform first, the agent-writable /opt/harnesses/bin after it: a harness never shadows gh or the
+# platform python. The image's ctxr comes after both, on purpose, so the in-place `ctxr` harness is
+# the agents' ctxr and this one only serve's and the one-shots'. DISABLE_AUTOUPDATER keeps claude
+# from rewriting itself; harness-install is the one writer of /opt/harnesses.
+ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/harnesses/bin:/usr/local/lib/contexture/bin \
     DISABLE_AUTOUPDATER=1 \
     HARNESS_STATUS_FILE=/home/agent/.local/state/contexture/harness-status.json
 
 # Every recipe parses, and the full selection -- what the shared compose file will default to --
 # is consistent with them.
-RUN HARNESSES=hermes,hermes-webui,claude,codex,agy,agent-browser,cb \
+RUN HARNESSES=ctxr,hermes,hermes-webui,claude,codex,agy,agent-browser,cb \
     HARNESS_SERVICES=hermes-gateway,hermes-dashboard,hermes-webui,claude-remote,codex-remote,agy-remote \
       harness-install check
 

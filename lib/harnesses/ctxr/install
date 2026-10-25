@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+: "${HARNESS_PREFIX:?HARNESS_PREFIX is required}"
+"$(dirname "$0")/../_lib/npm-install" ctxr-cli
+
+# The schema guard (see recipe.toml): never move past what the image's ctxr -- serve's -- reads.
+exec "$(dirname "$0")/schema-guard" \
+  "${HARNESS_PREFIX}/lib/node_modules/ctxr-cli/dist/config/schema.js" \
+  "${HARNESS_IMAGE_CTXR_SCHEMA:-/usr/local/lib/node_modules/ctxr-cli/dist/config/schema.js}"
