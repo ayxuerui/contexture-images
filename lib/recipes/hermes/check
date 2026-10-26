@@ -1,0 +1,9 @@
+#!/bin/sh
+# Is Hermes whole? Its launcher points at an interpreter under ~/.hermes/tools. A home restored from
+# a backup taken before the runtime existed, or copied without it, has the launcher and no
+# interpreter, and every program would launch into a Hermes trying to rebuild itself. Failing here
+# makes runtime-install re-run the installer, which rebuilds it.
+launcher="${HOME}/.local/share/hermes-agent/.hermes/bin/hermes"
+[ -f "${launcher}" ] || exit 1
+python="$(sed -n '2s/^exec \([^ ]*\) .*/\1/p' "${launcher}")"
+[ -n "${python}" ] && [ -x "${python}" ]

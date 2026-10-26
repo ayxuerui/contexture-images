@@ -1,0 +1,10 @@
+# Google's Antigravity CLI (`agy`), a harness, from its official installer
+# (https://antigravity.google/cli/install.sh), run as the agent: ~/.local/bin/agy. Self-updating:
+# it updates itself in the background during ordinary runs.
+kind = "harness"
+self_updating = true
+binaries = ["agy"]
+
+[services.agy-remote]
+command = ["python3", "/usr/local/bin/harness-remote", "run", "agy"]
+environment = { HARNESS_REMOTE_AGENTS = "agy", HARNESS_REMOTE_HOME = "${HOME}" }

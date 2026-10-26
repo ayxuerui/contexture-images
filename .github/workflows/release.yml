@@ -1,6 +1,8 @@
-# Build and push every harness image to GHCR.
+# Build and push every image to GHCR.
 #
-# The image tag IS the ctxr version it contains, and the Dockerfile asserts that equality at
+# contexture-runtime carries no ctxr (stores install it into their homes), so its tag is its own
+# version, the RUNTIME_VERSION file. For contexture-hermes the image tag IS the ctxr version it
+# contains, and the Dockerfile asserts that equality at
 # build time (lib/install-contexture-toolchain.sh). That is deliberate: a ctxr pin drifting
 # from the store's schema_version is the failure that has broken these deployments repeatedly,
 # and since ctxr 0.10.0 the schema gate is both-directional with no `ctxr migrate` to bridge it.
@@ -25,6 +27,7 @@ on:
     # artifact without touching that file, so the change would sit on main and never publish.
     paths:
       - 'CTXR_VERSION'
+      - 'RUNTIME_VERSION'
       - 'harnesses/**'
       - 'runtime/**'
       - 'lib/**'
@@ -55,15 +58,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # contexture-hermes until every store has moved; contexture-runtime is its successor
-        # (docs/design/harnesses-in-home.md). Both are tagged by the ctxr version.
+        # contexture-runtime is what stores run (docs/design/harnesses-in-home.md), tagged by
+        # RUNTIME_VERSION; contexture-hermes, its predecessor, is tagged by the ctxr version.
         include:
           - harness: hermes
             dockerfile: harnesses/hermes/Dockerfile
             description: Hermes agent runtime with the Contexture toolchain
+            version_file: CTXR_VERSION
           - harness: runtime
             dockerfile: runtime/Dockerfile
-            description: The Contexture platform; every harness installs into its harnesses volume
+            description: The Contexture platform; every harness and tool installs into the home
+            version_file: RUNTIME_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,6 +93,22 @@ jobs:
           npm view "ctxr-cli@${version}" version >/dev/null
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # The tag: the ctxr version for contexture-hermes, RUNTIME_VERSION for contexture-runtime.
+      - name: Resolve the image version
+        id: image
+        env:
+          VERSION_FILE: ${{ matrix.version_file }}
+          CTXR: ${{ steps.ctxr.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${VERSION_FILE}" = CTXR_VERSION ]; then
+            version="${CTXR}"
+          else
+            version="$(tr -d '[:space:]' < "${VERSION_FILE}")"
+          fi
+          [ -n "${version}" ] || { echo "::error::${VERSION_FILE} is empty" >&2; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
@@ -107,12 +128,12 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/contexture-${{ matrix.harness }}
           tags: |
-            type=raw,value=${{ steps.ctxr.outputs.version }}
-            type=raw,value=${{ steps.ctxr.outputs.version }}-${{ github.sha }}
+            type=raw,value=${{ steps.image.outputs.version }}
+            type=raw,value=${{ steps.image.outputs.version }}-${{ github.sha }}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.title=contexture-${{ matrix.harness }}
-            org.opencontainers.image.description=${{ matrix.description }} (ctxr ${{ steps.ctxr.outputs.version }})
+            org.opencontainers.image.description=${{ matrix.description }} (${{ matrix.harness }} ${{ steps.image.outputs.version }})
             org.opencontainers.image.licenses=MIT
 
       # arm64 matters here: the deployments consuming this run on aarch64. amd64 is carried so
@@ -155,14 +176,17 @@ jobs:
       - name: Tag
         run: |
           set -euo pipefail
-          version="$(tr -d '[:space:]' < CTXR_VERSION)"
-          tag="v${version}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "tag ${tag} already exists - leaving it alone"
-            exit 0
-          fi
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git tag -a "${tag}" -m "contexture-hermes ${tag}"
-          git push origin "${tag}"
-          echo "tagged ${tag}"
+          # v<ctxr> for contexture-hermes, runtime-v<RUNTIME_VERSION> for contexture-runtime.
+          for pair in "v$(tr -d '[:space:]' < CTXR_VERSION) contexture-hermes" \
+                      "runtime-v$(tr -d '[:space:]' < RUNTIME_VERSION) contexture-runtime"; do
+            tag="${pair%% *}"; image="${pair#* }"
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "tag ${tag} already exists - leaving it alone"
+              continue
+            fi
+            git tag -a "${tag}" -m "${image} ${tag}"
+            git push origin "${tag}"
+            echo "tagged ${tag}"
+          done

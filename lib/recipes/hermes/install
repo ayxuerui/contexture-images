@@ -1,0 +1,14 @@
+#!/bin/sh
+# Hermes' official source installer, as the agent. --dir puts the checkout under ~/.local/share;
+# HERMES_HOME stays ~/.hermes, upstream's default. Its default channel is stable (the latest
+# release), which `hermes update` then follows. Re-running it over an existing checkout repairs it,
+# which is what a failing `check` asks for. HERMES_INSTALL_COMMIT (--commit) is for the tests,
+# which start a release behind to have an update to take.
+set -eu
+installer="$(mktemp)"
+trap 'rm -f "${installer}"' EXIT
+"$(dirname "$0")/../_lib/fetch-installer" https://hermes-agent.nousresearch.com/install.sh "${installer}"
+bash "${installer}" --dir "${HOME}/.local/share/hermes-agent" --non-interactive --skip-computer-use \
+  ${HERMES_INSTALL_COMMIT:+--commit "${HERMES_INSTALL_COMMIT}"}
+# Drop the dependency environments of checkouts that no longer exist (an earlier image's).
+"${HOME}/.local/bin/hermes" pm gc >/dev/null 2>&1 || true

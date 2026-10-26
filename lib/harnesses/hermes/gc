@@ -1,4 +1,0 @@
-#!/bin/sh
-# After a version directory is removed: drop the dependency environments Hermes' package manager
-# kept for that checkout under ~/.hermes/installs. `pm gc` removes only what no checkout uses.
-exec "${HARNESS_PREFIX}/bin/hermes" pm gc

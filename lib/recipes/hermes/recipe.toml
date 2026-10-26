@@ -1,0 +1,123 @@
+# Hermes Agent (NousResearch), a harness, from its official source installer
+# (https://hermes-agent.nousresearch.com/install.sh), run as the agent: the checkout at
+# ~/.local/share/hermes-agent (`--dir`), the launcher at ~/.local/bin/hermes, its state in ~/.hermes.
+# The installer also puts its pinned Python, the dependency environments and Chromium under
+# ~/.hermes/tools and ~/.hermes/installs; only a development override moves those.
+#
+# Updated by its own command, `hermes update --yes --backup`: a full `hermes backup` first (a newer
+# Hermes migrates state.db, and an older one cannot open it afterwards, so going back is a restore),
+# then the update, config migration, and the gateway's restart through --external-supervisor.
+kind = "harness"
+binaries = ["hermes"]
+
+# The gateway. One serves every profile: since Hermes 0.22.5 the root profile's gateway
+# multiplexes them, and a gateway started for one profile is refused (exit 78, "does not get a
+# gateway of its own"). --external-supervisor: a restart or update exits 75 and supervisord
+# relaunches it on the new code.
+[services.hermes-gateway]
+command = ["hermes", "gateway", "run", "--replace", "--external-supervisor"]
+# Its API server, which compose enables (the WebUI's health pill and cron fires use it).
+probe = "http://127.0.0.1:${API_SERVER_PORT:-8642}/"
+environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WRITE_SAFE_ROOT = "${HOME}:${CONTEXTURE_STORE_ROOT}:/tmp" }
+
+# The dashboard. Host and port come from compose (HERMES_DASHBOARD_HOST/PORT), defaulting to
+# loopback: Hermes refuses a non-loopback bind without dashboard auth in config.yaml.
+[services.hermes-dashboard]
+command = ["${RUNTIME_RECIPE_DIR}/run-dashboard"]
+probe = "http://127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}/"
+environment = { HERMES_HOME = "${HOME}/.hermes" }
+
+# The home is backed up whole; Hermes' databases are the one part that is not copied file by
+# file, because a live SQLite file copied mid-write is torn. `hermes backup` copies each with
+# sqlite3.backup() -- consistent under a live writer -- into the snapshot instead, and restore puts
+# it back with `hermes import`.
+[backup]
+snapshot = "snapshot"
+restore = "restore"
+exclude = [".hermes/**/*.db", ".hermes/**/*.db-wal", ".hermes/**/*.db-shm", ".hermes/**/*.db-journal"]
+
+# What the config repository tracks of ~/.hermes: harnesses/hermes/hermes-config.gitignore's rules,
+# rooted at .hermes/ instead of the repository root.
+[config]
+root = ".hermes"
+bundled_skills = ".local/share/hermes-agent/skills"
+rules = """
+!/README.md
+!/SOUL.md
+!/config.yaml
+!/cron/
+!/memories/
+!/plugins/
+!/scripts/
+!/sessions/
+!/skills/
+!/user-skills/
+.update_check
+.skills_prompt_snapshot.json
+.clean_shutdown
+.session_cleanup.lock
+.codex_gpt55_autoraise_notice
+.gws_write_approval.json
+.npm_lock_hash_*
+context_length_cache.yaml
+processes.json
+gateway.pid
+gateway.lock
+gateway_state.json
+gateway/
+terminal-sessions/
+state/
+whatsapp/
+pairing/
+slack-manifest.json
+pastes/
+web-ui-build-stamp.json
+*.init.lock
+*.dispatch.lock
+state.db
+response_store.db
+verification_evidence.db
+kanban.db
+kanban/
+*.db-shm
+*.db-wal
+*.dbimport-*
+*.sqlite-shm
+*.sqlite-wal
+models_dev_cache.json
+models_dev_cache.etag
+*_models_cache.json
+logs/
+.hermes_history
+*.log
+config.yaml.bak*
+config.yaml.*.bak
+config.yaml.corrupt.*
+.curator_backups/
+cron/output/
+cron/.tick.lock
+cron/.jobs.lock
+cron/.fire-*.lock
+cron/**/*.log
+cron/ticker_heartbeat
+cron/ticker_last_success
+cron/executions.db
+cron/notepad.db*
+cron/usage_audit.jsonl
+audio_cache/
+image_cache/
+*_cache/
+cache/
+tmp/
+skills/.*
+@HARNESS_CONFIG_BUNDLED_SKILLS@
+sandboxes/
+checkpoints/
+state-snapshots/
+plugins/*
+sessions/request_dump_*.json
+channel_directory.json
+profiles/
+__pycache__/
+*.pyc
+"""

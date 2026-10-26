@@ -18,7 +18,7 @@ set -eu
 fail() { echo "install-contexture-toolchain: $*" >&2; exit 1; }
 
 : "${GH_VERSION:?GH_VERSION is required}"
-: "${CTXR_VERSION:?CTXR_VERSION is required}"
+: "${CTXR_VERSION:?CTXR_VERSION is required (none: gh only, for an image whose ctxr installs at runtime)}"
 
 # --- Base-image preconditions -------------------------------------------------------------
 # Asserted here, loudly and by name, rather than left to fail obscurely 40 lines down. Both
@@ -53,9 +53,11 @@ rm -rf /var/lib/apt/lists/*
 # removed in 0.10.0 -- so a mismatch means every ctxr call fails outright, not degrades.
 #
 # That coupling is why the image tag IS this version. Do not let the two drift.
-echo "install-contexture-toolchain: installing ctxr-cli ${CTXR_VERSION}"
-npm install -g "ctxr-cli@${CTXR_VERSION}"
-npm cache clean --force
+if [ "${CTXR_VERSION}" != none ]; then
+  echo "install-contexture-toolchain: installing ctxr-cli ${CTXR_VERSION}"
+  npm install -g "ctxr-cli@${CTXR_VERSION}"
+  npm cache clean --force
+fi
 
 # --- Smoke tests --------------------------------------------------------------------------
 # `ctxr --version` exists as of 0.10.0 (src/run.ts, isGlobalVersionRequest) and prints the bare
@@ -64,6 +66,10 @@ npm cache clean --force
 # binary ran, but said nothing about which version ran.
 gh --version
 
+if [ "${CTXR_VERSION}" = none ]; then
+  echo "install-contexture-toolchain: ok (gh ${GH_VERSION}, no ctxr)"
+  exit 0
+fi
 installed_ctxr="$(ctxr --version)"
 [ "${installed_ctxr}" = "${CTXR_VERSION}" ] \
   || fail "ctxr reports '${installed_ctxr}' but CTXR_VERSION is '${CTXR_VERSION}'"

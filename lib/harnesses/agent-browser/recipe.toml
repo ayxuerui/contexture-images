@@ -1,3 +1,0 @@
-# Vercel's agent-browser CLI, from npm. Needs Node >= 24, which is why the platform pins Node 24.
-binaries = ["agent-browser"]
-rebuild_on = ["node-major"]

@@ -1,0 +1,4 @@
+# Vercel's agent-browser, a tool: `npm install -g agent-browser` into NPM_CONFIG_PREFIX (~/.local).
+kind = "tool"
+npm = "agent-browser"
+binaries = ["agent-browser"]

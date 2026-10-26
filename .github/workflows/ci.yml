@@ -85,26 +85,26 @@ jobs:
       - name: Test opt-in configuration and shutdown
         run: python3 lib/tests/harness-remote-test.py
 
-  # harness-install against fake recipes in a temp directory: selection, pins, rollback, pruning,
-  # the rendered supervisor config. Only python3, so it reports in seconds.
-  harness-install:
-    name: harness-install
+  # runtime-install against fake recipes in a temp directory: selection by kind, installers and
+  # updates, self-updating harnesses, the rendered supervisor config, the allowlist. Only python3
+  # and sh, so it reports in seconds.
+  runtime-install:
+    name: runtime-install
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Test harness-install
-        run: python3 -B lib/tests/harness-install-test.py
+      - name: Test runtime-install
+        run: python3 -B lib/tests/runtime-install-test.py
       # The in-place move of a Hermes-image volume into a runtime home, and its reverse.
-      - name: Test harness-migrate-home
-        run: python3 -B lib/tests/migrate-home-test.py
+      - name: Test home-migrate
+        run: python3 -B lib/tests/home-migrate-test.py
       # Which `hermes backup` exits the Hermes recipe's snapshot accepts.
       - name: Test the Hermes snapshot
         run: python3 -B lib/tests/hermes-snapshot-test.py
 
-  # The runtime image (docs/design/harnesses-in-home.md, phase 1). Built and tested, never pushed:
-  # release.yml does not publish it until the stores move to it.
+  # The runtime image (docs/design/harnesses-in-home.md), built and tested; release.yml publishes it.
   runtime:
     name: build (runtime)
     runs-on: ubuntu-latest
@@ -113,17 +113,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Resolve CTXR_VERSION
-        id: ctxr
-        run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < CTXR_VERSION)"
-          [ -n "${version}" ] || { echo "::error::CTXR_VERSION is empty"; exit 1; }
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
+      # No build arguments: the runtime image carries no ctxr.
       - name: Build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -133,8 +126,6 @@ jobs:
           push: false
           load: true
           tags: contexture-runtime:ci
-          build-args: |
-            CTXR_VERSION=${{ steps.ctxr.outputs.version }}
           cache-from: type=gha,scope=runtime
           cache-to: type=gha,mode=max,scope=runtime
 
@@ -142,13 +133,13 @@ jobs:
       - name: Test supervision
         run: python3 lib/tests/runtime-container-test.py contexture-runtime:ci
 
-      # The network: every real recipe, from its publisher, into an empty volume.
-      - name: Test installing the real harnesses
-        run: sh lib/tests/runtime-install-test.sh contexture-runtime:ci
+      # The network: every real recipe but Hermes', from its publisher, into an empty home.
+      - name: Test the real installers
+        run: sh lib/tests/runtime-installers-test.sh contexture-runtime:ci
 
       # Hermes and its WebUI from upstream: boot, exit-75 relaunch, a profile's gateway, an
-      # update from one release behind, the forward-only refusal, backup and restore, and what
-      # the config repository would track.
+      # update from one release behind, backup and restore, and what the config repository
+      # would track.
       - name: Test Hermes on the runtime image
         run: python3 lib/tests/runtime-hermes-test.py contexture-runtime:ci
 

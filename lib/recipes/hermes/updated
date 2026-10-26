@@ -1,0 +1,3 @@
+#!/bin/sh
+# After an update: drop dependency environments no checkout uses any more.
+exec hermes pm gc

@@ -136,14 +136,14 @@ class Runtime(unittest.TestCase):
     def everything(self):
         return self.render('--profile', 'init', '--profile', 'backup', '--profile', 'migrate')
 
-    def test_version_matches_ctxr_version(self):
-        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+    def test_version_matches_runtime_version(self):
+        version = (ROOT / 'RUNTIME_VERSION').read_text().strip()
         pinned = re.findall(r'^x-image: &image ghcr\.io/ayxuerui/contexture-runtime:(\S+)$', RUNTIME.read_text(), re.M)
         self.assertEqual(pinned, [version])
 
     def test_every_service_pulls_the_version_tag(self):
         model = self.everything()
-        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+        version = (ROOT / 'RUNTIME_VERSION').read_text().strip()
         self.assertEqual({s['image'] for s in model['services'].values()},
                          {f'ghcr.io/ayxuerui/contexture-runtime:{version}'})
         self.assertEqual({s.get('pull_policy') for s in model['services'].values()}, {'always'})
@@ -160,28 +160,53 @@ class Runtime(unittest.TestCase):
         self.assertIsNone(agents.get('entrypoint'))  # tini + the runtime entrypoint
         self.assertIsNone(agents.get('command'))
         env = agents['environment']
-        self.assertEqual(env['HARNESSES'], 'hermes,hermes-webui,claude,codex,agy,agent-browser,cb')
+        self.assertEqual(env['HARNESSES'], 'hermes,hermes-webui,claude,codex,agy')
+        self.assertEqual(env['TOOLS'], 'ctxr,cb,agent-browser')
         self.assertEqual(env['HARNESS_SERVICES'], 'hermes-gateway,hermes-dashboard,hermes-webui')
-        self.assertEqual(env['HARNESS_PINS'], '')
-        for retired in ('HERMES_DASHBOARD', 'HERMES_WEBUI_ENABLED', 'HARNESS_REMOTE_AGENTS', 'HERMES_HOME'):
+        self.assertEqual(env['RUNTIME_UPDATE_INTERVAL'], '86400')
+        for retired in ('HERMES_DASHBOARD', 'HERMES_WEBUI_ENABLED', 'HARNESS_REMOTE_AGENTS', 'HERMES_HOME',
+                        'HARNESS_PINS', 'HARNESS_UPDATE_INTERVAL'):
             self.assertNotIn(retired, env)
         mounts = {m['target']: m['source'] for m in agents['volumes']}
-        self.assertEqual(mounts, {'/home/agent': 'home', '/opt/harnesses': 'harnesses', '/store': 'store'})
+        self.assertEqual(mounts, {'/home/agent': 'home', '/store': 'store'}, 'everything installed lives in the home')
 
     def test_the_selection_reaches_the_backup_jobs(self):
         model = self.everything()
+        agents = model['services']['agents']['environment']
         for name in ('harness-backup', 'harness-config-push', 'harness-backup-cron', 'harness-config-cron'):
             with self.subTest(service=name):
                 service = model['services'][name]
-                self.assertEqual(service['environment']['HARNESSES'], model['services']['agents']['environment']['HARNESSES'])
-                harnesses = [m for m in service['volumes'] if m['source'] == 'harnesses']
-                self.assertEqual(len(harnesses), 1)
-                self.assertTrue(harnesses[0].get('read_only'), 'the backup jobs never install')
+                for variable in ('HARNESSES', 'TOOLS'):
+                    self.assertEqual(service['environment'][variable], agents[variable])
+                self.assertEqual({m['source'] for m in service['volumes']}, {'home'})
+        self.assertEqual(model['services']['harness-backup']['entrypoint'], ['home-backup'])
+        self.assertEqual(model['services']['harness-config-cron']['command'], ['home-config-push'])
 
-    def test_serve_never_sees_the_home_or_the_harnesses(self):
+    def test_the_old_backup_variable_names_still_work(self):
+        env = dict(REQUIRED, HARNESS_BACKUP_DESTINATION='rclone:gdrive:old', HARNESS_CONFIG_REPO='git@x:old.git',
+                   HOME_CONFIG_INCLUDE='.hermes/plugins/new/', HARNESS_CONFIG_INCLUDE='.hermes/plugins/old/',
+                   HARNESS_BACKUP_INTERVAL='3600')
+        model = self.render('--profile', 'backup', env=env)
+        cron = model['services']['harness-backup-cron']['environment']
+        self.assertEqual(cron['HOME_BACKUP_DESTINATION'], 'rclone:gdrive:old')
+        self.assertEqual(cron['HARNESS_SCHEDULE_INTERVAL'], '3600')
+        push = model['services']['harness-config-push']['environment']
+        self.assertEqual(push['HOME_CONFIG_REPO'], 'git@x:old.git')
+        self.assertEqual(push['HOME_CONFIG_INCLUDE'], '.hermes/plugins/new/', 'the new name wins')
+
+    def test_serve_never_sees_the_home(self):
         model = self.render()
-        sources = {m['source'] for m in model['services']['serve']['volumes']}
-        self.assertEqual(sources, {'store'})
+        serve = model['services']['serve']
+        mounts = {m['target']: m['source'] for m in serve['volumes']}
+        self.assertEqual(mounts, {'/home/agent': 'serve-home', '/store': 'store'},
+                         'serve has a home of its own, never the agents\'')
+        for name, service in self.everything()['services'].items():
+            if name != 'serve':
+                self.assertNotIn('serve-home', {m['source'] for m in service.get('volumes', [])}, name)
+        self.assertIsNone(serve.get('entrypoint'), 'the runtime entrypoint installs its ctxr')
+        env = serve['environment']
+        self.assertEqual((env['HARNESSES'], env['TOOLS'], env['HARNESS_SERVICES']), ('', 'ctxr', 'ctxr-serve'))
+        self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
         self.assertNotIn('secrets', agents)
@@ -209,7 +234,7 @@ volumes:
             self.assertEqual(result.returncode, 0, result.stderr)
             model = json.loads(result.stdout)
         self.assertEqual(model['volumes']['home'], {'name': 'pkm-leilei_data', 'external': True})
-        self.assertEqual(model['volumes']['harnesses']['name'], 'pkm-leilei_harnesses')
+        self.assertNotIn('harnesses', model['volumes'])
         self.assertEqual(model['services']['agents']['environment']['HARNESS_SERVICES'],
                          'hermes-gateway,hermes-webui,claude-remote')
         self.assertNotIn('data', model['volumes'])

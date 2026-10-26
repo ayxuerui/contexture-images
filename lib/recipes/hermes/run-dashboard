@@ -1,0 +1,8 @@
+#!/bin/sh
+# The supervised dashboard. `hermes update` stops every dashboard of this HERMES_HOME and relaunches
+# the ones it does not know to be supervised (it knows systemd and launchd, not supervisord) as its
+# own detached copy. That copy holds the port, and this program would then exit at once ("already
+# running on this host") until supervisord gives up on it. So first stop whatever dashboard this
+# home has -- this one is not running, or supervisord would not be starting it -- then take over.
+hermes dashboard --stop >/dev/null 2>&1 || true
+exec hermes dashboard --host "${HERMES_DASHBOARD_HOST:-127.0.0.1}" --port "${HERMES_DASHBOARD_PORT:-9119}" --no-open

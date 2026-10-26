@@ -1,2 +1,0 @@
-#!/bin/sh
-exec hermes dashboard --host "${HERMES_DASHBOARD_HOST:-127.0.0.1}" --port "${HERMES_DASHBOARD_PORT:-9119}" --no-open

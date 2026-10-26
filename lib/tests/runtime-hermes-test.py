@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Hermes and its WebUI on the runtime image, for real: install, supervise, update, back up.
 
-Needs the network: it installs Hermes from upstream's source installer, one release behind the
-latest, then updates it. What it proves is the part of the design that only running Hermes can:
+Needs the network: it installs Hermes with upstream's own installer into the home, one release
+behind the latest (the install hook's test-only HERMES_INSTALL_COMMIT), then lets `hermes update`
+take it to the latest. What it proves is the part of the design that only running Hermes can:
 
-  - a fresh home boots to a gateway, dashboard and WebUI under supervisord, as `agent`
+  - a fresh home boots to a gateway, dashboard and WebUI under supervisord, as `agent`, with
+    Hermes' checkout in ~/.local/share/hermes-agent and the WebUI's in ~/.local/share/hermes-webui
   - `hermes gateway restart` exits 75 and supervisord relaunches it (--external-supervisor)
   - with a second profile, the one gateway still serves (Hermes 0.22.5+ multiplexes profiles)
-  - --update installs the next version beside the running one, takes a `hermes backup` first,
-    flips `current`, and restarts the gateway, dashboard and WebUI onto the new code
-  - a pin back to the older version is refused, and the services keep running
-  - harness-backup puts ~/.hermes in through `hermes backup`, and restore brings it back
-  - a checkout whose runtime is missing (a restored home) is reinstalled at boot
-  - harness-config-push would track the recipes' files and none of the credentials
+  - --update runs `hermes update` and restarts the gateway, dashboard and WebUI onto the new code
+  - home-backup takes ~/.hermes' databases through `hermes backup` and the rest as files, and
+    restore brings the home back
+  - a checkout whose runtime is missing (a damaged home) is reinstalled at boot
+  - home-config-push would track the recipes' files and none of the credentials
 
     python3 lib/tests/runtime-hermes-test.py contexture-runtime:ci
 """
@@ -52,44 +53,52 @@ def eventually(check, seconds=900, what='condition'):
 
 
 def healthy():
-    return agent('harness-install', 'status', check=False).returncode == 0
+    return agent('runtime-install', 'status', check=False).returncode == 0
 
 
 def pid(program):
     return agent('supervisorctl', 'pid', 'runtime:' + program).stdout.strip()
 
 
-def releases():
-    out = subprocess.run(['curl', '-fsSL', 'https://api.github.com/repos/NousResearch/hermes-agent/releases?per_page=10'],
+def github(path):
+    out = subprocess.run(['curl', '-fsSL', 'https://api.github.com/repos/NousResearch/hermes-agent/' + path],
                          capture_output=True, text=True, check=True).stdout
-    return [r['tag_name'].lstrip('v') for r in json.loads(out) if not r['prerelease'] and not r['draft']]
+    return json.loads(out)
+
+
+def releases():
+    return [r['tag_name'].lstrip('v') for r in github('releases?per_page=10') if not r['prerelease'] and not r['draft']]
 
 
 def start(*env):
     flags = [part for pair in env for part in ('-e', pair)]
-    docker('run', '-d', '--name', NAME, '-v', f'{NAME}-home:/home/agent', '-v', f'{NAME}-harnesses:/opt/harnesses',
+    docker('run', '-d', '--name', NAME, '-v', f'{NAME}-home:/home/agent',
            '--mount', f'type=bind,src={store},dst=/store', '-e', 'CONTEXTURE_STORE_ROOT=/store',
-           '-e', 'HARNESSES=hermes,hermes-webui', '-e', f'HARNESS_SERVICES={SERVICES}',
+           '-e', 'HARNESSES=hermes,hermes-webui', '-e', 'TOOLS=', '-e', f'HARNESS_SERVICES={SERVICES}',
            '-e', 'HERMES_WEBUI_HOST=127.0.0.1', '-e', 'HERMES_WEBUI_PORT=8787', '-e', 'CTXR_UPDATE_STORE_ENABLED=0',
            *flags, IMAGE)
 
 
 latest, older = releases()[:2]
+older_commit = github(f'commits/v{older}')['sha']
 with tempfile.TemporaryDirectory() as temporary:
     store = Path(temporary)
     store.chmod(0o777)
     try:
         # --- fresh boot, one release behind -------------------------------------------------------
-        start(f'HARNESS_PINS=hermes={older}')
+        start(f'HERMES_INSTALL_COMMIT={older_commit}')
         eventually(healthy, what=f'Hermes {older} installed and serving')
-        assert agent('readlink', '/opt/harnesses/hermes/current').stdout.strip() == older
+        assert older in agent('hermes', '--version').stdout
+        assert sh('command -v hermes').strip() == '/home/agent/.local/bin/hermes'
+        assert sh('test -x ~/.local/share/hermes-agent/.hermes/bin/hermes && echo ok').strip() == 'ok'
+        assert sh('test -f ~/.local/share/hermes-webui/server.py && echo ok').strip() == 'ok'
         # RUNNING means up for supervisord's 5 seconds, not yet listening: the dashboard can take longer.
         serving = lambda port: agent('curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
                                      f'http://127.0.0.1:{port}/', check=False).stdout not in ('', '000')
         for port in (8642, 9119, 8787):
             eventually(lambda: serving(port), seconds=180, what=f'something serving on {port}')
         assert docker('exec', NAME, 'ps', '-o', 'user=', '-C', 'supervisord').stdout.split()[:1] == ['agent']
-        print(f'PASS: a fresh home boots Hermes {older}, its gateway, dashboard and WebUI, as agent')
+        print(f'PASS: a fresh home boots Hermes {older}, its gateway, dashboard and WebUI, as agent, from the home')
 
         before = pid('hermes-gateway')
         agent('hermes', 'gateway', 'restart', '--yes')
@@ -106,26 +115,21 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # --- update ---------------------------------------------------------------------------
         pids = {p: pid(p) for p in ('hermes-gateway', 'hermes-dashboard', 'hermes-webui')}
-        agent('harness-install', '--update', env=('HARNESS_PINS=',))
-        assert agent('readlink', '/opt/harnesses/hermes/current').stdout.strip() == latest
-        assert latest in agent('hermes', '--version').stdout
-        assert sh(f'ls ~/.local/state/contexture/hermes-pre-update/before-{latest}.zip'), 'no pre-update backup'
-        assert sorted(sh('ls /opt/harnesses/hermes').split()) == sorted([latest, older, 'current'])
+        update_started = docker('exec', NAME, 'date', '-u', '+%Y-%m-%dT%H:%M:%SZ').stdout.strip()
+        out = agent('runtime-install', '--update', 'hermes').stdout
+        assert latest in agent('hermes', '--version').stdout, out
+        assert f'hermes: updated from {older} to {latest}' in out, out
         eventually(healthy, seconds=300, what='healthy after update')
         for program, old in pids.items():
             assert pid(program) not in ('0', old), f'{program} was not restarted onto {latest}'
-        print(f'PASS: --update {older} -> {latest}: backup first, flip, gateway, dashboard and WebUI restarted')
-
-        docker('rm', '-f', NAME)
-        start(f'HARNESS_PINS=hermes={older}')
-        eventually(lambda: 'cannot go back' in docker('logs', NAME).stdout, seconds=300, what='the backwards pin refused')
-        eventually(lambda: pid('hermes-gateway') not in ('', '0'), seconds=300, what='gateway still running')
-        assert agent('readlink', '/opt/harnesses/hermes/current').stdout.strip() == latest
-        assert not healthy(), 'a refused pin must leave status failing'
-        docker('rm', '-f', NAME)
-        start()
-        eventually(healthy, seconds=600, what='healthy unpinned')
-        print('PASS: a pin back to the older Hermes is refused; it keeps running, and status says so')
+        # `hermes update` relaunches dashboards it does not know are supervised; the one serving
+        # must be supervisord's, or the next restart finds the port taken.
+        dashboard = pid('hermes-dashboard')
+        time.sleep(20)
+        assert pid('hermes-dashboard') == dashboard, 'the supervised dashboard is restarting in a loop'
+        logs = docker('logs', '--since', update_started, NAME).stdout
+        assert 'already running on this host' not in logs, 'a dashboard outside supervisord took the port'
+        print(f'PASS: --update runs `hermes update` {older} -> {latest}; gateway, dashboard and WebUI restarted')
 
         # --- backup and restore ------------------------------------------------------------------
         sh('''
@@ -133,31 +137,35 @@ mkdir -p ~/.config/contexture ~/.claude/projects/p
 echo pw > ~/.config/contexture/restic-password
 echo '{"m":1}' > ~/.claude/projects/p/x.jsonl
 echo 'original soul' > ~/.hermes/SOUL.md
-HARNESS_BACKUP_DESTINATION=/tmp/restic HARNESS_BACKUP_MIN_FREE_MB=100 harness-backup
+HOME_BACKUP_DESTINATION=/tmp/restic HOME_BACKUP_MIN_FREE_MB=100 home-backup
 ''')
         listing = sh('RESTIC_REPOSITORY=/tmp/restic RESTIC_PASSWORD_FILE=~/.config/contexture/restic-password restic ls latest')
         assert '/tmp/harness-backup/hermes/hermes.zip' in listing
         assert '/home/agent/.claude/projects/p/x.jsonl' in listing
-        assert '/home/agent/.hermes/state.db' not in listing, 'state.db must go in through hermes backup, not as a file'
-        assert '/home/agent/.hermes/tools' not in listing
+        live = [line for line in listing.splitlines()
+                if line.startswith('/home/agent/.hermes/') and line.endswith(('.db', '.db-wal', '.db-shm', '.db-journal'))]
+        assert not live, ('live databases must go in through hermes backup, not as files', live)
+        print('ok: other files beside the databases: '
+              + ', '.join(l for l in listing.splitlines() if l.startswith('/home/agent/.hermes/state.db')))
+        assert '/home/agent/.hermes/config.yaml' in listing, 'the rest of ~/.hermes goes in as files'
+        assert '/home/agent/.local/share/hermes-agent/run_agent.py' in listing, 'the installed harness is backed up'
         agent('supervisorctl', 'stop', 'runtime:hermes-gateway', 'runtime:hermes-dashboard', 'runtime:hermes-webui')
-        sh('rm -rf ~/.claude; echo damaged > ~/.hermes/SOUL.md; HARNESS_BACKUP_DESTINATION=/tmp/restic harness-backup restore')
+        sh('rm -rf ~/.claude; echo damaged > ~/.hermes/SOUL.md; HARNESS_BACKUP_DESTINATION=/tmp/restic home-backup restore')
         assert sh('cat ~/.claude/projects/p/x.jsonl').strip() == '{"m":1}'
         assert sh('cat ~/.hermes/SOUL.md').strip() == 'original soul'
         agent('supervisorctl', 'start', 'runtime:hermes-gateway', 'runtime:hermes-dashboard', 'runtime:hermes-webui')
         eventually(healthy, seconds=300, what='healthy after restore')
-        print('PASS: harness-backup takes ~/.hermes through `hermes backup`, and restore brings the home back')
+        print('PASS: home-backup takes Hermes\' databases through `hermes backup`, and restore brings the home back')
 
         # --- a home without Hermes' runtime --------------------------------------------------------
-        # What a restore from backup leaves (hermes backup omits ~/.hermes/tools and installs/), or a
-        # harnesses volume kept while the home was replaced: the checkout is there, its interpreter
-        # is not. The recipe's check must catch it and reinstall, not start a half-installed Hermes.
+        # A home damaged or copied without Hermes' runtime: the checkout is there, its interpreter is
+        # not. The recipe's check must catch it and reinstall, not start a half-installed Hermes.
         docker('stop', '-t', '30', NAME)
         docker('run', '--rm', '--entrypoint', 'sh', '-v', f'{NAME}-home:/home/agent', IMAGE,
                '-c', 'rm -rf /home/agent/.hermes/tools /home/agent/.hermes/installs')
         docker('start', NAME)
         eventually(healthy, seconds=900, what='healthy after Hermes\' runtime was removed')
-        assert 'fails its check; reinstalling it' in docker('logs', NAME).stdout
+        assert 'hermes: installing' in docker('logs', NAME).stdout
         print('PASS: a checkout whose runtime is gone is reinstalled at boot, and serves')
 
         # --- config repository ---------------------------------------------------------------------
@@ -165,7 +173,7 @@ HARNESS_BACKUP_DESTINATION=/tmp/restic HARNESS_BACKUP_MIN_FREE_MB=100 harness-ba
 echo token > ~/.codex-auth-probe; mkdir -p ~/.codex && echo t > ~/.codex/auth.json
 git init -q --bare /tmp/config.git
 git config --global user.email ci@example.com; git config --global user.name ci
-HARNESS_CONFIG_REPO=/tmp/config.git HARNESS_CONFIG_ALLOW_UNVERIFIED_REMOTE=1 HARNESS_CONFIG_DRY_RUN=1 harness-config-push
+HOME_CONFIG_REPO=/tmp/config.git HOME_CONFIG_ALLOW_UNVERIFIED_REMOTE=1 HOME_CONFIG_DRY_RUN=1 home-config-push
 ''')
         files = [line.split('\t', 1)[1] for line in staged.splitlines() if line.strip().startswith('A\t')]
         for wanted in ('.hermes/SOUL.md', '.hermes/config.yaml'):
@@ -176,11 +184,11 @@ HARNESS_CONFIG_REPO=/tmp/config.git HARNESS_CONFIG_ALLOW_UNVERIFIED_REMOTE=1 HAR
         for secret in ('.hermes/.env', '.codex/auth.json', '.config/contexture/restic-password', '.hermes/state.db'):
             assert secret not in files, (secret, files)
         assert not any(f.startswith('.hermes/skills/') for f in files), 'bundled skills must not be tracked'
-        print('PASS: harness-config-push would track the selected recipes\' files and no credentials')
+        print('PASS: home-config-push would track the selected recipes\' files and no credentials')
     except Exception:
         out = docker('logs', NAME, check=False)
         print(f'--- logs\n{out.stdout[-20000:]}{out.stderr[-5000:]}', file=sys.stderr)
         raise
     finally:
         docker('rm', '-f', NAME, check=False)
-        docker('volume', 'rm', f'{NAME}-home', f'{NAME}-harnesses', check=False)
+        docker('volume', 'rm', f'{NAME}-home', check=False)

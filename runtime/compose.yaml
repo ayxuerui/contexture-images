@@ -1,7 +1,7 @@
 # Shared deployment for a Contexture store on the contexture-runtime image.
 #
 # The successor to harnesses/hermes/compose.yaml (docs/design/harnesses-in-home.md). A store moves
-# by changing its include from that file to this one -- after harness-migrate-home has turned its
+# by changing its include from that file to this one -- after home-migrate has turned its
 # volume into a home -- so stores migrate one at a time, and the old file stays as it is for the
 # ones that have not:
 #
@@ -9,44 +9,49 @@
 #   include:
 #     - https://github.com/ayxuerui/contexture-images.git#main:runtime/compose.yaml
 #
-# Same contract as the old file: no pin on the store side; the image is named by its ctxr version,
-# asserted equal to CTXR_VERSION by CI and bumped with it by watch-ctxr.yml; every service pulls on
-# every `up`; nothing here is deployment-specific. What changes for a store:
+# No pin on the store side: the image is named by its own version, asserted equal to RUNTIME_VERSION
+# by CI; every service pulls on every `up`; nothing here is deployment-specific. The image carries
+# no ctxr: it is installed into a home on first boot and updated daily, like every tool. What
+# changes for a store:
 #
 #   - the volume key `data` (HERMES_HOME at /opt/data) is now `home` (the agent's home at
 #     /home/agent). A store that maps its volume by name renames the key and keeps the name; a
 #     store that never mapped it MUST add `home: {name: <project>_data, external: true}`, or
 #     Compose creates an empty <project>_home and the agent boots with no logins.
-#   - a second volume, `harnesses`, holds the installed harnesses. It is a cache: never backed up,
-#     safe to drop (`docker volume rm <project>_harnesses`) for a clean reinstall.
-#   - which harnesses and services run is HARNESSES / HARNESS_SERVICES / HARNESS_PINS, below,
+#   - every harness and tool is installed into that home by its publisher's own installer (npm
+#     packages with `npm install -g` into ~/.local), and backed up with it. There is no second
+#     volume; a store that still has `<project>_harnesses` from an earlier image can remove it.
+#   - which harnesses, tools and services run is HARNESSES / TOOLS / HARNESS_SERVICES, below,
 #     replacing HERMES_DASHBOARD, HERMES_WEBUI_ENABLED and HARNESS_REMOTE_AGENTS.
+#   - the backup variables are HOME_BACKUP_* and HOME_CONFIG_*; the HARNESS_BACKUP_* and
+#     HARNESS_CONFIG_* names they replace are still read when the new ones are unset.
 
-x-image: &image ghcr.io/ayxuerui/contexture-runtime:0.33.0
+x-image: &image ghcr.io/ayxuerui/contexture-runtime:1.0.0
 
-# What a container has. Defaulted here, so a harness added to the default reaches every store on
-# merge; a store's .env or override changes only what it wants different. The backup jobs read
-# them too: harness-backup and harness-config-push work from the selected harnesses' recipes.
-x-harness-selection: &harness-selection
-  HARNESSES: ${HARNESSES:-hermes,hermes-webui,claude,codex,agy,agent-browser,cb}
+# What a container has: the harnesses (the agents), the tools they use, and the harnesses'
+# programs to run. Defaulted here, so one added to the default reaches every store on merge; a
+# store's .env or override changes only what it wants different. The backup jobs read them too:
+# home-backup and home-config-push work from the selected recipes.
+x-runtime-selection: &runtime-selection
+  HARNESSES: ${HARNESSES:-hermes,hermes-webui,claude,codex,agy}
+  TOOLS: ${TOOLS:-ctxr,cb,agent-browser}
   HARNESS_SERVICES: ${HARNESS_SERVICES:-hermes-gateway,hermes-dashboard,hermes-webui}
-  HARNESS_PINS: ${HARNESS_PINS:-}
 
 # The one-shots and schedulers override the entrypoint, so the runtime entrypoint never runs:
 # HOME is set explicitly rather than taken from the remapped passwd entry.
-x-harness-home: &harness-home
-  <<: *harness-selection
+x-runtime-home: &runtime-home
+  <<: *runtime-selection
   HOME: /home/agent
 
 # Every value uses `:-`, never `:?`, for the reason the old file gives: Compose interpolates the
 # whole model on every command, so a `:?` on a profile-gated service would break `up` for a store
 # without backups.
 x-backup-env: &backup-env
-  <<: *harness-home
-  HARNESS_BACKUP_DESTINATION: ${HARNESS_BACKUP_DESTINATION:-}
-  HARNESS_BACKUP_PASSWORD_FILE: ${HARNESS_BACKUP_PASSWORD_FILE:-/home/agent/.config/contexture/restic-password}
-  HARNESS_BACKUP_KEEP: ${HARNESS_BACKUP_KEEP:---keep-daily 7 --keep-weekly 8 --keep-monthly 6}
-  HARNESS_BACKUP_MIN_FREE_MB: ${HARNESS_BACKUP_MIN_FREE_MB:-2048}
+  <<: *runtime-home
+  HOME_BACKUP_DESTINATION: ${HOME_BACKUP_DESTINATION:-${HARNESS_BACKUP_DESTINATION:-}}
+  HOME_BACKUP_PASSWORD_FILE: ${HOME_BACKUP_PASSWORD_FILE:-${HARNESS_BACKUP_PASSWORD_FILE:-/home/agent/.config/contexture/restic-password}}
+  HOME_BACKUP_KEEP: ${HOME_BACKUP_KEEP:-${HARNESS_BACKUP_KEEP:---keep-daily 7 --keep-weekly 8 --keep-monthly 6}}
+  HOME_BACKUP_MIN_FREE_MB: ${HOME_BACKUP_MIN_FREE_MB:-${HARNESS_BACKUP_MIN_FREE_MB:-2048}}
   RESTIC_PACK_SIZE: ${RESTIC_PACK_SIZE:-64}
   RCLONE_CONFIG_GDRIVE_TYPE: drive
   RCLONE_CONFIG_GDRIVE_CLIENT_ID: ${RCLONE_CONFIG_GDRIVE_CLIENT_ID:-}
@@ -62,22 +67,22 @@ x-approval-env: &approval-env
   CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE: ${CONTEXTURE_GITHUB_APP_ID:+/run/secrets/github-app-key}
 
 x-config-env: &config-env
-  <<: *harness-home
-  HARNESS_CONFIG_REPO: ${HARNESS_CONFIG_REPO:-}
+  <<: *runtime-home
+  HOME_CONFIG_REPO: ${HOME_CONFIG_REPO:-${HARNESS_CONFIG_REPO:-}}
   # A store's own keeps and ignores, whitespace-separated, home-relative (`.hermes/plugins/x/`).
-  HARNESS_CONFIG_INCLUDE: ${HARNESS_CONFIG_INCLUDE:-}
-  HARNESS_CONFIG_EXCLUDE: ${HARNESS_CONFIG_EXCLUDE:-}
+  HOME_CONFIG_INCLUDE: ${HOME_CONFIG_INCLUDE:-${HARNESS_CONFIG_INCLUDE:-}}
+  HOME_CONFIG_EXCLUDE: ${HOME_CONFIG_EXCLUDE:-${HARNESS_CONFIG_EXCLUDE:-}}
 
 services:
-  # One-off provisioning: clone the store into the store volume and persist the gh credential in
-  # the agent's home.
+  # One-off provisioning: install ctxr into the agent's home, clone the store into the store volume
+  # and persist the gh credential in the home.
   #   docker compose --profile init run --rm workspace-init
   workspace-init:
     image: *image
     pull_policy: always
     profiles: ["init"]
     restart: "no"
-    entrypoint: ["ctxr-provision"]
+    entrypoint: ["runtime-provision"]
     environment:
       REPO_URL: ${REPO_URL:-}
       GH_TOKEN: ${GH_TOKEN:-}
@@ -91,8 +96,8 @@ services:
       - store:/store
       - home:/home/agent
 
-  # Every selected harness and its services, under supervisord as `agent`. The image's entrypoint
-  # remaps PUID/PGID, installs what is missing into the harnesses volume and starts the
+  # Every selected harness and tool, and the harnesses' services, under supervisord as `agent`. The
+  # image's entrypoint remaps PUID/PGID, installs what is missing into the home and starts the
   # supervisor; never override it.
   agents:
     image: *image
@@ -103,12 +108,12 @@ services:
     # Required by the Chromium the browser tools run.
     shm_size: "1gb"
     environment:
-      <<: *harness-selection
+      <<: *runtime-selection
       CONTEXTURE_STORE_ROOT: /store
       PUID: ${PUID:-10000}
       PGID: ${PGID:-10000}
-      # The daily harness update, in seconds; 0 turns it off.
-      HARNESS_UPDATE_INTERVAL: ${HARNESS_UPDATE_INTERVAL:-86400}
+      # The daily update of what does not update itself, in seconds; 0 turns it off.
+      RUNTIME_UPDATE_INTERVAL: ${RUNTIME_UPDATE_INTERVAL:-${HARNESS_UPDATE_INTERVAL:-86400}}
       CTXR_UPDATE_STORE_ENABLED: ${CTXR_UPDATE_STORE_ENABLED:-1}
       # The store's skills, for Hermes. `$$` keeps the variable for Hermes to expand.
       HERMES_SKILLS_EXTERNAL_DIRS: '["$$CONTEXTURE_STORE_ROOT/.agents/skills"]'
@@ -135,16 +140,15 @@ services:
       HARNESS_REMOTE_AGY_ARGS: ${HARNESS_REMOTE_AGY_ARGS:-}
     volumes:
       - home:/home/agent
-      - harnesses:/opt/harnesses
       - store:/store
     healthcheck:
       # Provisioning ran; the store's skills directory exists where HERMES_SKILLS_EXTERNAL_DIRS
-      # points; every selected harness is installed and every selected program is running and,
-      # where its recipe names a probe, answering HTTP (`harness-install status`).
-      test: ["CMD-SHELL", "test -f /store/.contexture-initialized && test -d \"$$CONTEXTURE_STORE_ROOT/.agents/skills\" && harness-install status"]
+      # points; every selected harness and tool is installed and every selected program is running
+      # and, where its recipe names a probe, answering HTTP (`runtime-install status`).
+      test: ["CMD-SHELL", "test -f /store/.contexture-initialized && test -d \"$$CONTEXTURE_STORE_ROOT/.agents/skills\" && runtime-install status"]
       interval: 30s
       timeout: 15s
-      # A first boot installs every harness (Hermes alone takes minutes); later boots install
+      # A first boot installs everything (Hermes alone takes minutes); later boots install
       # nothing. A check that passes inside the start period still reports healthy at once.
       start_period: 15m
       retries: 5
@@ -154,27 +158,37 @@ services:
           memory: ${AGENTS_MEMORY_LIMIT:-6G}
           cpus: "${AGENTS_CPUS:-3.0}"
 
-  # Browsing, the approval page, and landing what was approved. Unchanged from the old file but for
-  # the image: its own container, because it holds the App key and agents must not, and it mounts
-  # neither the home nor the harnesses.
+  # Browsing, the approval page, and landing what was approved. Its own container, because it holds
+  # the App key and agents must not, with its own home (`serve-home`) that no agent container
+  # mounts: the same image, entrypoint and supervisor as `agents`, selecting only ctxr and its
+  # `ctxr-serve` program. ctxr installs there on first boot and updates daily, restarting serve.
   serve:
     image: *image
     pull_policy: always
     restart: unless-stopped
-    entrypoint: ["ctxr"]
-    command: ["serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "/store"]
-    user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *approval-env
+      HARNESSES: ""
+      TOOLS: ctxr
+      HARNESS_SERVICES: ctxr-serve
+      CONTEXTURE_STORE_ROOT: /store
+      CTXR_SERVE_PORT: ${CTXR_SERVE_PORT:-18080}
+      PUID: ${PUID:-10000}
+      PGID: ${PGID:-10000}
+      RUNTIME_UPDATE_INTERVAL: ${RUNTIME_UPDATE_INTERVAL:-${HARNESS_UPDATE_INTERVAL:-86400}}
+      # The store's own changes are the agents' to open; serve only reads and lands.
+      CTXR_UPDATE_STORE_ENABLED: "0"
     secrets:
       - github-app-key
     volumes:
+      - serve-home:/home/agent
       - store:/store
     healthcheck:
-      test: ["CMD-SHELL", "curl -sS -o /dev/null http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"]
+      test: ["CMD-SHELL", "runtime-install status"]
       interval: 30s
-      timeout: 5s
-      start_period: 15s
+      timeout: 15s
+      # The first boot installs ctxr.
+      start_period: 5m
       retries: 5
     deploy:
       resources:
@@ -182,51 +196,49 @@ services:
           memory: 512M
           cpus: "1.0"
 
-  # --- Harness home backup ------------------------------------------------------------------
-  # harness-backup: the whole home to restic, credentials included, each harness's state through
-  # its recipe's snapshot (Hermes': `hermes backup`). harness-config-push: the selected recipes'
-  # config to a private git repository, no credentials. Restore, with the agents stopped:
+  # --- Home backup ---------------------------------------------------------------------------
+  # home-backup: the whole home to restic -- credentials, installed harnesses and tools included --
+  # with live databases through their recipe's snapshot (Hermes': `hermes backup`).
+  # home-config-push: the selected recipes' config to a private git repository, no credentials.
+  # The service names keep their harness-* names, which stores' overrides refer to. Restore, with
+  # the agents stopped:
   #
   #   docker compose stop agents
   #   docker compose --profile backup run --rm harness-backup restore [SNAPSHOT]
-  #
-  # The harnesses volume is mounted read-only: the recipes' snapshot commands run the installed
-  # harnesses (`hermes backup`), and nothing here installs them.
   harness-backup:
     image: *image
     pull_policy: always
     profiles: ["backup"]
     restart: "no"
-    entrypoint: ["harness-backup"]
+    entrypoint: ["home-backup"]
     user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *backup-env
     volumes:
       - home:/home/agent
-      - harnesses:/opt/harnesses:ro
 
   harness-config-push:
     image: *image
     pull_policy: always
     profiles: ["backup"]
     restart: "no"
-    entrypoint: ["harness-config-push"]
+    entrypoint: ["home-config-push"]
     user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *config-env
-      HARNESS_CONFIG_DRY_RUN: ${HARNESS_CONFIG_DRY_RUN:-}
+      HOME_CONFIG_DRY_RUN: ${HOME_CONFIG_DRY_RUN:-${HARNESS_CONFIG_DRY_RUN:-}}
     volumes:
       - home:/home/agent
-      - harnesses:/opt/harnesses:ro
 
   # Turns a Hermes-image `data` volume into a home, in place; --reverse puts it back. With the
   # agents stopped:  docker compose --profile migrate run --rm harness-migrate-home --agents-stopped
+  # (The service keeps its name; its command is now home-migrate.)
   harness-migrate-home:
     image: *image
     pull_policy: always
     profiles: ["migrate"]
     restart: "no"
-    entrypoint: ["harness-migrate-home"]
+    entrypoint: ["home-migrate"]
     user: "${PUID:-10000}:${PGID:-10000}"
     volumes:
       - home:/home/agent
@@ -235,18 +247,17 @@ services:
     image: *image
     pull_policy: always
     restart: unless-stopped
-    entrypoint: ["harness-schedule"]
-    command: ["harness-backup"]
+    entrypoint: ["runtime-schedule"]
+    command: ["home-backup"]
     user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *backup-env
-      HARNESS_SCHEDULE_INTERVAL: ${HARNESS_BACKUP_INTERVAL:-86400}
-      HARNESS_SCHEDULE_NAME: harness-backup
+      HARNESS_SCHEDULE_INTERVAL: ${HOME_BACKUP_INTERVAL:-${HARNESS_BACKUP_INTERVAL:-86400}}
+      HARNESS_SCHEDULE_NAME: home-backup
       # Failures go out through `hermes send`, from the installed Hermes, when a target is set.
       HARNESS_SCHEDULE_NOTIFY: ${HARNESS_NOTIFY_TARGET:-}
     volumes:
       - home:/home/agent
-      - harnesses:/opt/harnesses:ro
     deploy:
       resources:
         limits:
@@ -257,17 +268,16 @@ services:
     image: *image
     pull_policy: always
     restart: unless-stopped
-    entrypoint: ["harness-schedule"]
-    command: ["harness-config-push"]
+    entrypoint: ["runtime-schedule"]
+    command: ["home-config-push"]
     user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *config-env
-      HARNESS_SCHEDULE_INTERVAL: ${HARNESS_CONFIG_INTERVAL:-21600}
-      HARNESS_SCHEDULE_NAME: harness-config-push
+      HARNESS_SCHEDULE_INTERVAL: ${HOME_CONFIG_INTERVAL:-${HARNESS_CONFIG_INTERVAL:-21600}}
+      HARNESS_SCHEDULE_NAME: home-config-push
       HARNESS_SCHEDULE_NOTIFY: ${HARNESS_NOTIFY_TARGET:-}
     volumes:
       - home:/home/agent
-      - harnesses:/opt/harnesses:ro
     deploy:
       resources:
         limits:
@@ -279,10 +289,10 @@ secrets:
     file: ${CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH:-/dev/null}
 
 volumes:
-  # The agent's home: every harness's state and every provider login. NEVER `docker compose down
-  # -v`: only interactive re-authentication recovers what this holds.
+  # The agent's home: every harness and tool, their state, and every provider login. NEVER
+  # `docker compose down -v`: only interactive re-authentication recovers what this holds.
   home:
-  # The installed harnesses: a cache, rebuilt from the recipes when dropped.
-  harnesses:
+  # serve's home: its ctxr and nothing else. Never mounted by an agent container. Safe to drop.
+  serve-home:
   # The store checkout the agents work in.
   store:

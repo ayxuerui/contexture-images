@@ -1,0 +1,17 @@
+# Claude Code, a harness, from its official installer (https://claude.ai/install.sh), run as the
+# agent with its real HOME: the binary goes to ~/.local/share/claude/versions/<version>, the launcher
+# to ~/.local/bin/claude. Self-updating: claude keeps itself current, and its remote-control server
+# carries its own update relaunch, so runtime-install installs it once and only records its version.
+kind = "harness"
+self_updating = true
+binaries = ["claude"]
+
+[services.claude-remote]
+command = ["python3", "/usr/local/bin/harness-remote", "run", "claude"]
+environment = { HARNESS_REMOTE_AGENTS = "claude", HARNESS_REMOTE_HOME = "${HOME}" }
+
+# Chat history, for the config repository. .credentials.json is never tracked: the allowlist's
+# credential denylist comes last.
+[config]
+root = ".claude"
+rules = "!/projects/"

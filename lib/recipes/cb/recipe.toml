@@ -1,0 +1,5 @@
+# Circleback's CLI (`cb`), a tool: `npm install -g @circleback/cli` into NPM_CONFIG_PREFIX
+# (~/.local). Inert until `cb auth login`, which writes under the agent's home.
+kind = "tool"
+npm = "@circleback/cli"
+binaries = ["cb"]

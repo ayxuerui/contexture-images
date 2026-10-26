@@ -8,7 +8,81 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | Hermes agent + WebUI (in-process, supervised) + `gh` + `ctxr` + `codex`, `agent-browser`, `cb` (Circleback), `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq` |
+| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION`. See [The runtime image](#the-runtime-image) |
+| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | The earlier image, every tool baked in: Hermes agent + WebUI + `gh` + `ctxr` + `codex`, `agent-browser`, `cb`, `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq`. No store runs it any more; the sections below that name it describe it |
+
+## The runtime image
+
+`runtime/compose.yaml` is the deployment every store includes:
+
+```yaml
+name: my-store
+include:
+  - https://github.com/ayxuerui/contexture-images.git#main:runtime/compose.yaml
+```
+
+**Harnesses and tools live in the home, not the image.** The image is the platform; what the
+agents use is installed into the agent's home (`/home/agent`, the `home` volume) on first boot,
+each by its publisher's own installer, as the agent, with no sudo:
+
+| Name | Kind | Installed by | Where | Updated by |
+|---|---|---|---|---|
+| `hermes` | harness | upstream's `install.sh --dir ~/.local/share/hermes-agent` (stable channel) | `~/.local/share/hermes-agent`, its runtime in `~/.hermes/tools` | `hermes update --yes --backup`, daily |
+| `hermes-webui` | harness | `git clone` at the latest release tag | `~/.local/share/hermes-webui` | the next release tag, daily |
+| `claude` | harness | `claude.ai/install.sh` | `~/.local/share/claude` | itself |
+| `codex` | harness | `chatgpt.com/codex/install.sh` | `~/.codex/packages/standalone` | itself |
+| `agy` | harness | its official installer | `~/.local/bin/agy` | itself |
+| `ctxr`, `cb`, `agent-browser` | tool | `npm install -g` | `~/.local/lib/node_modules` | `npm install -g <pkg>@latest`, daily |
+
+Every binary lands in `~/.local/bin`. `npm install -g` works as the agent because the image sets
+`NPM_CONFIG_PREFIX=/home/agent/.local`, so an agent's own `npm install -g` (the ctxr-upgrade
+skill's, for one) goes to the same place. `PATH` is the platform first, then `~/.local/bin`, then
+the image's own ctxr last.
+
+**The whole home is backed up**, installed harnesses and tools included, so a restored home runs
+without reinstalling anything. The only part not copied file by file is Hermes' live databases,
+which go in through `hermes backup` instead.
+
+**What runs** is three variables, defaulted in the compose file so an addition reaches every store
+on merge:
+
+| Variable | Default | |
+|---|---|---|
+| `HARNESSES` | `hermes,hermes-webui,claude,codex,agy` | The agents |
+| `TOOLS` | `ctxr,cb,agent-browser` | What the agents use |
+| `HARNESS_SERVICES` | `hermes-gateway,hermes-dashboard,hermes-webui` | Programs to run; add `claude-remote`, `codex-remote`, `agy-remote` for remote control |
+| `RUNTIME_UPDATE_INTERVAL` | `86400` | The update of what does not update itself; `0` turns it off |
+| `HOME_BACKUP_*`, `HOME_CONFIG_*` | see the file | Backups and the config repository. The `HARNESS_BACKUP_*` and `HARNESS_CONFIG_*` names they replace are still read |
+
+`runtime-install` (`lib/runtime-install.py`) installs what is missing at boot, runs the daily
+update, renders `HARNESS_SERVICES` into supervisor programs, and restarts a harness's programs
+when its version moves, whether it moved itself or was updated. `docker exec -u agent <container>
+runtime-install status` reports every harness, tool and program; it is the healthcheck.
+
+**`serve` has a home of its own.** It holds the store's approval App key, so it never mounts the
+agents' home: code the agents can rewrite must never run beside that key. It runs the same image,
+entrypoint and supervisor with only ctxr selected (`TOOLS=ctxr`, `HARNESS_SERVICES=ctxr-serve`), on
+its own `serve-home` volume at `/home/agent`. Its ctxr installs there on first boot and updates
+daily, like the agents', each container on its own timer. `workspace-init` installs ctxr into the
+agents' home (`runtime-provision`) before it provisions.
+
+**When a ctxr release raises the store schema** (rare: it was 10 from 0.20.0 to 0.34.0), each
+container's ctxr refuses the store from its next daily update until the store migrates: `serve`
+goes unhealthy, and agents' ctxr commands fail. The agents container's update opens the migration
+pull request (`ctxr-update-store`). Merge it on GitHub, then end the outage at once instead of
+waiting for the next daily run:
+
+```sh
+docker compose exec -u agent agents runtime-install --update ctxr   # newest ctxr, then pulls /store
+docker compose exec -u agent serve  runtime-install --update ctxr
+docker compose exec -u agent agents ctxr-update-store               # pulls /store if ctxr had not moved
+```
+
+**Adding a tool** is a directory under `lib/recipes/` (see its README): an npm package is a
+three-line `recipe.toml`; anything else is its publisher's installer as an `install` script.
+Then add its name to `TOOLS` in `runtime/compose.yaml`. An agent can also install a tool for
+itself, for one store, with the tool's own installer or `npm install -g`; it lands in the home
+and is backed up with it.
 
 ## Using it
 
@@ -585,20 +659,23 @@ harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store (on unless =0), t
 harnesses/hermes/s6-rc.d/*-remote/     Claude Code, Codex and agy remote control, off unless selected
 ```
 
-In progress, not yet deployed (see [docs/design/harnesses-in-home.md](docs/design/harnesses-in-home.md)):
+The runtime image (see [docs/design/harnesses-in-home.md](docs/design/harnesses-in-home.md)):
 
 ```
 runtime/Dockerfile                    contexture-runtime: the platform with no harness in it
+runtime/compose.yaml                  the shared deployment every store includes
 runtime/entrypoint.sh                 PUID/PGID remap as root, then everything as `agent`
 runtime/supervisord.conf              the supervisor; its programs are rendered at each boot
-lib/harness-install.py                shipped as `harness-install`: installs, updates and supervises harnesses
-lib/harnesses/<name>/                 one recipe per harness: recipe.toml, install, latest
+lib/runtime-install.py                shipped as `runtime-install`: installs and updates harnesses and tools, renders programs
+lib/recipes/<name>/                   one recipe per harness or tool: recipe.toml, install, update, hooks
 lib/install-node.sh                   Node 24 from nodejs.org, hashes pinned here
-lib/runtime-backup.py                 shipped as `harness-backup` there: the home to restic, via recipe snapshots; restore
-runtime/config-push.sh                shipped as `harness-config-push` there: lib/config-push.sh, allowlist from recipes
-lib/migrate-home.py                   shipped as `harness-migrate-home`: a Hermes-image volume into a runtime home, and back
-runtime/store-update.sh               shipped as `runtime-store-update`: store update, then the harnesses' hooks
+lib/home-backup.py                    shipped as `home-backup`: the home to restic, via recipe snapshots; restore
+runtime/config-push.sh                shipped as `home-config-push`: lib/config-push.sh, allowlist from recipes
+lib/home-migrate.py                   shipped as `home-migrate`: a Hermes-image volume into a runtime home, and back
+runtime/store-update.sh               shipped as `runtime-store-update`: store update, then the recipes' hooks
 ```
+
+The `harness-*` names these replaced stay in the image as links.
 
 Adding a harness is adding a directory under `harnesses/` and a line in the two workflow
 matrices. There is no shared *base image*, and that is not an oversight: each harness brings its

@@ -40,8 +40,8 @@ printf '%s  %s\n' "$sha" "/tmp/${tarball}" | sha256sum -c - >/dev/null \
   || fail "${tarball} does not match its pinned sha256"
 
 # Into /usr/local, root-owned: the agent runs unprivileged and cannot replace the platform's
-# Node. Harnesses that are npm packages install into their own prefix under /opt/harnesses with
-# THIS node -- see lib/harnesses/*/install -- so they never write here either.
+# Node. npm packages the agent installs go to NPM_CONFIG_PREFIX (~/.local) with THIS node, so they
+# never write here either.
 tar -xJf "/tmp/${tarball}" -C /usr/local --strip-components=1 \
   --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE' --exclude='*/include' \
   --exclude='*/share/doc' --exclude='*/share/man'
