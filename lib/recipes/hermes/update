@@ -1,0 +1,6 @@
+#!/bin/sh
+# Hermes' own update: a full backup first, then the update, config migration and the gateway's
+# restart (it exits 75; supervisord relaunches it). The dashboard and WebUI are runtime-install's to
+# restart, when the version moved.
+set -eu
+hermes update --yes --backup

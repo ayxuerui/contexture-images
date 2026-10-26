@@ -1,9 +1,57 @@
 # Harnesses live beside the home, not in the image
 
-Status: proposed 2026-10-23. Phases 1 and 2 are built (2026-10-24): `runtime/`,
-`lib/harness-install.py`, `lib/harnesses/`, the recipe-driven backup and config push, and
-`harness-migrate-home`; tested in CI, not published or deployed. Phase 3, migrating the stores, is
-not started.
+Status: proposed 2026-10-23; phases 1-3 built and every store migrated by 2026-10-25. **Revised
+2026-10-26** (below): the `harnesses` volume, versioned installs and pins are gone, and every
+harness and tool is installed into the home by its publisher's own installer. Where the sections
+after the revision describe `/opt/harnesses`, `HARNESS_PINS`, `current` links or `harness-install`,
+the revision supersedes them; they are kept as the record of what was built first.
+
+## Revision 2026-10-26: official installers, into the home
+
+**What changed.** Each harness and tool is installed by its publisher's own installer, as the
+agent, wherever that installer puts it in the home: claude in `~/.local/share/claude`, codex in
+`~/.codex/packages/standalone`, agy in `~/.local/bin`, Hermes with `install.sh --dir
+~/.local/share/hermes-agent` (its runtime in `~/.hermes/tools`), the WebUI as a release-tag clone
+in `~/.local/share/hermes-webui`. npm packages (ctxr, cb, agent-browser) are the one place the
+platform steps in: `npm install -g` as a non-root user fails on `/usr/local`, so the image sets
+`NPM_CONFIG_PREFIX=/home/agent/.local`. Every binary ends up in `~/.local/bin`. The whole home is
+backed up, installed software included; only Hermes' live databases go through `hermes backup`.
+
+What a recipe declares shrank to match: its `kind` (`harness` in `HARNESSES`, `tool` in `TOOLS`),
+its binaries, and either `npm = "<package>"` or an `install` script, with `self_updating = true`
+for claude, codex and agy, which keep themselves current. `harness-install` became
+`runtime-install`; the backup jobs became `home-backup`, `home-config-push` and `home-migrate`,
+with the old names kept as links and the `HARNESS_BACKUP_*`/`HARNESS_CONFIG_*` variables still read.
+
+**Why.** The versioned layout reimplemented each installer: a prefix per version, a `current`
+link, pruning, pins. Every publisher's installer already has its own layout and its own update,
+and each disagreed with ours in a different way. claude's and codex's update themselves and keep
+their own previous release; `DISABLE_AUTOUPDATER` held claude back, and the remote-control
+process's update-and-relaunch never ran. Hermes' installer and `hermes update` assume a checkout
+they own. Keeping our layout meant tracking every installer's internals for the life of the
+image; using theirs means tracking nothing. And with installs in the home, an agent can add a tool
+for itself the same way a person would, and it survives a recreate and a restore.
+
+**What it gives up, argued for the old design:**
+
+- *Pins and a rollback in one variable.* `HARNESS_PINS=codex=0.162.1` was a minute's fix with no
+  image. Now going back is each publisher's own mechanism (codex keeps its previous release;
+  claude's `versions/`; Hermes was always a restore), or restoring the home from last night's
+  backup. Accepted: no store ever set a pin while the old design ran, and a restore is the
+  one path that covers every harness the same way.
+- *Every store on the same versions.* Self-updating harnesses now drift per store, by hours.
+  Accepted: they did before, too (agy updated itself inside its version directory), and the
+  status file records each store's versions.
+- *A backup that excludes reinstallable software.* The home's backup now carries roughly a
+  gigabyte of installed harnesses. Accepted: restic deduplicates it across snapshots, and a
+  restore that needs no network to run is worth the space.
+- *A clean wipe.* Dropping the `harnesses` volume reinstalled everything. Now the same is deleting
+  the installer's directories in the home, or `runtime-install` reinstalling whatever fails its
+  `check`.
+
+**Unchanged:** the platform image and its tag, supervision, the programs and their restarts when a
+version moves, the ctxr schema guard (`serve` runs the image's ctxr and never mounts the home), and
+Hermes' backup through `hermes backup`.
 
 ## Why
 

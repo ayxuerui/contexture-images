@@ -1,0 +1,5 @@
+#!/bin/sh
+# A new ctxr is in use: bring the store along (re-render, migrate if its schema is behind), as the
+# container start does. ctxr-update-store elects one container per store, opens a pull request when
+# anything changed, and never fails: its own output says what it did.
+ctxr-update-store || echo "ctxr: ctxr-update-store exited $?"

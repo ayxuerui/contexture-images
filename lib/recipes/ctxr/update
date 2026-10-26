@@ -1,0 +1,11 @@
+#!/bin/sh
+# ctxr's daily update: npm's @latest, unless it moves the store schema past serve's ctxr.
+set -eu
+here="$(dirname "$0")"
+probe="$(mktemp -d)"
+trap 'rm -rf "${probe}"' EXIT
+NPM_CONFIG_PREFIX="${probe}" npm install -g --loglevel=error --no-fund ctxr-cli@latest >/dev/null
+version="$(node -p 'require(process.argv[1]).version' "${probe}/lib/node_modules/ctxr-cli/package.json")"
+"${here}/schema-guard" "${probe}/lib/node_modules/ctxr-cli/dist/config/schema.js" \
+  "${RUNTIME_IMAGE_CTXR_SCHEMA:-/usr/local/lib/node_modules/ctxr-cli/dist/config/schema.js}"
+npm install -g --loglevel=error --no-fund "ctxr-cli@${version}"

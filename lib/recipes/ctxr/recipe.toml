@@ -1,0 +1,16 @@
+# The Contexture CLI, a tool: `npm install -g ctxr-cli` into NPM_CONFIG_PREFIX (~/.local), so the
+# shipped ctxr-upgrade skill's own `npm install -g ctxr-cli@latest` works from a session too.
+#
+# Two ctxr exist on purpose. The image keeps its own (the image tag is its version) for what must
+# never run code the agent can write: `serve`, which holds the store's approval App key and never
+# mounts the home, and the one-shots. It is at the END of PATH, so in the agents container this
+# one -- ~/.local/bin/ctxr -- is the ctxr in use.
+#
+# They may differ by releases, never by store schema. schema_version gates every ctxr in both
+# directions (src/config/load.ts), so `install` and `update` refuse a release whose
+# SUPPORTED_SCHEMA_VERSION is above the image's ctxr: that release waits for the image, which
+# carries serve along with it (a first install then takes the image's own version). The
+# schema has been 10 from 0.20.0 to 0.34.0 while ctxr shipped almost daily.
+kind = "tool"
+npm = "ctxr-cli"
+binaries = ["ctxr"]

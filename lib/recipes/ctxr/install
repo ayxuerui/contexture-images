@@ -1,0 +1,10 @@
+#!/bin/sh
+# ctxr's first install into the home: the newest release the guard allows (`update`), or, when it
+# refuses, the image's own version, which serve already runs.
+set -eu
+here="$(dirname "$0")"
+"${here}/update" && exit 0
+image="$(node -p 'require(process.argv[1]).version' \
+  "${RUNTIME_IMAGE_CTXR_PACKAGE:-/usr/local/lib/node_modules/ctxr-cli/package.json}")"
+echo "ctxr: installing the image's version, ${image}" >&2
+npm install -g --loglevel=error --no-fund "ctxr-cli@${image}"

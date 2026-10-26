@@ -1,0 +1,4 @@
+#!/bin/sh
+# Whole when the clone has its server and sits on a release tag.
+dir="${HOME}/.local/share/hermes-webui"
+[ -f "${dir}/server.py" ] && git -C "${dir}" describe --tags --exact-match >/dev/null 2>&1

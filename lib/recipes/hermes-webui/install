@@ -1,0 +1,23 @@
+#!/bin/sh
+# The WebUI's own install: a git clone of its repository (its README has no installer), at the
+# newest stable release tag, into ~/.local/share/hermes-webui, with a launcher on ~/.local/bin.
+set -eu
+dir="${HOME}/.local/share/hermes-webui"
+tag="v$("$(dirname "$0")/../_lib/github-latest" nesquena/hermes-webui)"
+rm -rf "${dir}.new"
+git clone --quiet --depth 1 --branch "${tag}" https://github.com/nesquena/hermes-webui.git "${dir}.new"
+test -f "${dir}.new/server.py"
+rm -rf "${dir}"
+mv "${dir}.new" "${dir}"
+mkdir -p "${HOME}/.local/bin"
+cat > "${HOME}/.local/bin/hermes-webui" <<'LAUNCHER'
+#!/bin/sh
+# Written by the runtime's hermes-webui recipe. The version is the release tag checked out.
+dir="${HOME}/.local/share/hermes-webui"
+if [ "${1:-}" = --version ]; then
+  git -C "${dir}" describe --tags --exact-match 2>/dev/null | sed 's/^v//'
+  exit 0
+fi
+cd "${dir}" && exec python3 server.py "$@"
+LAUNCHER
+chmod +x "${HOME}/.local/bin/hermes-webui"

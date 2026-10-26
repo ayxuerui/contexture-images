@@ -1,7 +1,7 @@
 #!/bin/sh
 # The runtime image's entrypoint, under tini as PID 1.
 #
-#   as root:   apply PUID/PGID to the `agent` user, give it /run/harness, own the two volumes,
+#   as root:   apply PUID/PGID to the `agent` user, give it /run/harness, own the home volume,
 #              then re-exec this script as `agent` -- nothing after that runs as root
 #   as agent:  with arguments, run them (a one-off like `docker run <image> ctxr --version`);
 #              without, install what is missing and hand the container to supervisord
@@ -23,15 +23,13 @@ if [ "$(id -u)" = 0 ]; then
   [ "$(id -g agent)" = "${PGID}" ] || groupmod -o -g "${PGID}" agent
   [ "$(id -u agent)" = "${PUID}" ] || usermod -o -u "${PUID}" agent
   install -d -o agent -g agent -m 0700 /run/harness
-  # Only when the top of a volume belongs to someone else: a fresh named volume copies the
+  # Only when the top of the home belongs to someone else: a fresh named volume copies the
   # image's ownership, and an unchanged PUID finds nothing to do.
-  for dir in /home/agent /opt/harnesses; do
-    owner="$(stat -c %u "${dir}")"
-    if [ "${owner}" != "${PUID}" ]; then
-      log "${dir} is owned by uid ${owner}, not ${PUID}; changing it once"
-      chown -R agent:agent "${dir}"
-    fi
-  done
+  owner="$(stat -c %u /home/agent)"
+  if [ "${owner}" != "${PUID}" ]; then
+    log "/home/agent is owned by uid ${owner}, not ${PUID}; changing it once"
+    chown -R agent:agent /home/agent
+  fi
   # supervisord, as agent, reopens /dev/stdout for every program's log -- and Docker's log pipe
   # belongs to root, so that open is refused (EACCES). Hand the pipe to the agent first. A
   # terminal (`docker run -t`) is the same; a redirect to a file the agent cannot own is left be.
@@ -48,8 +46,8 @@ if [ "$#" -gt 0 ]; then
   exec "$@"
 fi
 
-# A configuration mistake (an unknown harness, a service no selected harness offers) exits 2 and
-# stops the container, loudly. A harness that fails to install does not: it is reported, its
-# programs are left out, and the rest start.
-harness-install
+# A configuration mistake (an unknown harness or tool, a service no selected harness offers) exits 2
+# and stops the container, loudly. One that fails to install does not: it is reported, its programs
+# are left out, and the rest start. On an empty home this is where every installer runs.
+runtime-install
 exec supervisord -c /etc/supervisor/supervisord.conf

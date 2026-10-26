@@ -2,9 +2,10 @@
 """Boot the runtime image for real -- tini, the entrypoint, supervisord -- with fake harnesses.
 
 No network: the fake claude, codex and agy recipes keep the real recipes' services (so
-harness-remote runs them exactly as it would the real CLIs) but install a script that answers
-`--version` and otherwise prints who and where it is, then sleeps ignoring SIGTERM, like a
-remote-control server that does not exit promptly. That covers supervision without depending on
+harness-remote runs them exactly as it would the real CLIs) but install, into ~/.local/bin as their
+publishers' installers do, a script that answers `--version` and otherwise prints who and where it
+is, then sleeps ignoring SIGTERM, like a remote-control server that does not exit promptly. The
+fake codex is given an `update` and is not self-updating, so the update path has one to move. That covers supervision without depending on
 any publisher being up: privilege drop, HOME and cwd, one program restarting without the others,
 an update restarting only its own harness's program, a bounded shutdown, PUID remapping, and a
 configuration error stopping the container.
@@ -25,19 +26,18 @@ REPO = Path(__file__).resolve().parent.parent.parent
 RUN = 'runtime-test-' + uuid.uuid4().hex[:8]
 
 FAKE = '''#!/bin/sh
-if [ "${1:-}" = --version ]; then cat "$(dirname "$(readlink -f "$0")")/../VERSION"; exit 0; fi
+if [ "${1:-}" = --version ]; then cat "$HOME/.local/share/fake-$(basename "$0")/VERSION"; exit 0; fi
 trap '' TERM
 echo "ready $(basename "$0") uid=$(id -u) home=$HOME cwd=$(pwd)"
 exec sleep 300
 '''
 INSTALL = '''#!/bin/sh
 set -eu
-mkdir -p "$HARNESS_PREFIX/bin"
-echo "$HARNESS_VERSION" > "$HARNESS_PREFIX/VERSION"
-cp /test/fake "$HARNESS_PREFIX/bin/{name}"
-chmod +x "$HARNESS_PREFIX/bin/{name}"
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/fake-{name}"
+cat /test/latest > "$HOME/.local/share/fake-{name}/VERSION"
+cp /test/fake "$HOME/.local/bin/{name}"
+chmod +x "$HOME/.local/bin/{name}"
 '''
-LATEST = '#!/bin/sh\ncat /test/latest\n'
 
 
 def docker(*args, check=True):
@@ -56,10 +56,10 @@ def eventually(check, seconds=60, what='condition'):
 def run(name, source, *extra, volumes=True):
     mounts = ['--mount', f'type=bind,src={source},dst=/test']
     if volumes:
-        mounts += ['-v', f'{name}-home:/home/agent', '-v', f'{name}-harnesses:/opt/harnesses']
+        mounts += ['-v', f'{name}-home:/home/agent']
     return docker('run', '-d', '--name', name, '--network', 'none', *mounts,
-                  '-e', 'HARNESS_RECIPES=/test/recipes', '-e', 'CONTEXTURE_STORE_ROOT=/test/store',
-                  '-e', 'HARNESSES=claude,codex,agy', '-e', 'HARNESS_SERVICES=claude-remote,codex-remote,agy-remote',
+                  '-e', 'RUNTIME_RECIPES=/test/recipes', '-e', 'CONTEXTURE_STORE_ROOT=/test/store',
+                  '-e', 'HARNESSES=claude,codex,agy', '-e', 'TOOLS=', '-e', 'HARNESS_SERVICES=claude-remote,codex-remote,agy-remote',
                   *extra, IMAGE)
 
 
@@ -73,12 +73,12 @@ def program_pid(name, program):
 
 def healthy(name):
     # As root, with no -u: that is how Docker runs a healthcheck, HOME=/root and all.
-    return docker('exec', name, 'harness-install', 'status', check=False).returncode == 0
+    return docker('exec', name, 'runtime-install', 'status', check=False).returncode == 0
 
 
 def cleanup(name):
     docker('rm', '-f', name, check=False)
-    docker('volume', 'rm', f'{name}-home', f'{name}-harnesses', check=False)
+    docker('volume', 'rm', f'{name}-home', check=False)
 
 
 with tempfile.TemporaryDirectory() as temporary:
@@ -92,15 +92,20 @@ with tempfile.TemporaryDirectory() as temporary:
     for name in ('claude', 'codex', 'agy'):
         directory = source / 'recipes' / name
         directory.mkdir(parents=True)
-        shutil.copy(REPO / 'lib' / 'harnesses' / name / 'recipe.toml', directory)
-        for script, body in (('install', INSTALL.format(name=name)), ('latest', LATEST)):
-            (directory / script).write_text(body)
+        recipe = (REPO / 'lib' / 'recipes' / name / 'recipe.toml').read_text()
+        scripts = ['install']
+        if name == 'codex':
+            recipe = recipe.replace('self_updating = true\n', '')
+            scripts.append('update')
+        (directory / 'recipe.toml').write_text(recipe)
+        for script in scripts:
+            (directory / script).write_text(INSTALL.format(name=name))
             (directory / script).chmod(0o755)
     names = [RUN, RUN + '-remap', RUN + '-bad']
     try:
         # --- supervision -------------------------------------------------------------------
         run(RUN, source)
-        eventually(lambda: healthy(RUN), what='harness-install status')
+        eventually(lambda: healthy(RUN), what='runtime-install status')
         logs = lambda: docker('logs', RUN).stdout
         for name in ('claude', 'codex', 'agy'):
             eventually(lambda: f'ready {name} uid=10000 home=/home/agent cwd=/test/store' in logs(),
@@ -121,15 +126,15 @@ with tempfile.TemporaryDirectory() as temporary:
 
         (source / 'latest').write_text('2.0.0\n')
         pids = {p: program_pid(RUN, p) for p in ('claude-remote', 'codex-remote', 'agy-remote')}
-        agent(RUN, 'harness-install', '--update', 'codex')
-        assert agent(RUN, 'readlink', '/opt/harnesses/codex/current').stdout.strip() == '2.0.0'
+        agent(RUN, 'runtime-install', '--update')
         assert agent(RUN, 'codex', '--version').stdout.strip() == '2.0.0', 'PATH reaches the new version'
+        assert agent(RUN, 'claude', '--version').stdout.strip() == '1.0.0', 'a self-updating harness was updated'
         eventually(lambda: program_pid(RUN, 'codex-remote') not in ('0', pids['codex-remote']),
                    what='codex-remote restarted by the update')
         assert program_pid(RUN, 'claude-remote') == pids['claude-remote'], 'update restarted claude-remote'
-        assert json.loads(agent(RUN, 'cat', '/home/agent/.local/state/contexture/harness-status.json').stdout
-                          )['harnesses']['codex']['version'] == '2.0.0'
-        print('PASS: --update flips one harness and restarts only its program')
+        assert json.loads(agent(RUN, 'cat', '/home/agent/.local/state/contexture/runtime-status.json').stdout
+                          )['installed']['codex']['version'] == '2.0.0'
+        print('PASS: --update moves what does not update itself and restarts only its program')
 
         start = time.monotonic()
         docker('stop', '--timeout', '30', RUN)
@@ -138,8 +143,9 @@ with tempfile.TemporaryDirectory() as temporary:
         code = docker('inspect', '--format', '{{.State.ExitCode}}', RUN).stdout.strip()
         assert code == '0', f'exit code {code}'
         docker('start', RUN)
-        eventually(lambda: healthy(RUN), what='healthy after a restart on the same volumes')
-        assert agent(RUN, 'readlink', '/opt/harnesses/codex/current').stdout.strip() == '2.0.0', 'boot must not move codex'
+        (source / 'latest').write_text('3.0.0\n')
+        eventually(lambda: healthy(RUN), what='healthy after a restart')
+        assert agent(RUN, 'codex', '--version').stdout.strip() == '2.0.0', 'boot must not move codex'
         print(f'PASS: bounded shutdown ({elapsed:.1f}s, exit 0); a restart keeps what is installed')
 
         # --- PUID remap ----------------------------------------------------------------------
@@ -147,9 +153,9 @@ with tempfile.TemporaryDirectory() as temporary:
         run(remap, source, '-e', 'PUID=10001', '-e', 'PGID=10001')
         eventually(lambda: healthy(remap), what='remapped container healthy')
         eventually(lambda: 'uid=10001 home=/home/agent' in docker('logs', remap).stdout, what='programs as 10001')
-        owner = docker('exec', remap, 'stat', '-c', '%u', '/home/agent', '/opt/harnesses').stdout.split()
+        owner = docker('exec', remap, 'stat', '-c', '%u', '/home/agent', '/home/agent/.local/bin/claude').stdout.split()
         assert owner == ['10001', '10001'], owner
-        print('PASS: PUID/PGID remap the agent and its volumes')
+        print('PASS: PUID/PGID remap the agent and its home')
 
         # --- configuration error ---------------------------------------------------------------
         bad = RUN + '-bad'

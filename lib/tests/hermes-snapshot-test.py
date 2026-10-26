@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parent.parent / 'harnesses' / 'hermes' / 'snapshot'
+SCRIPT = Path(__file__).resolve().parent.parent / 'recipes' / 'hermes' / 'snapshot'
 
 FAKE = '''#!/usr/bin/env python3
 import os, sys, zipfile

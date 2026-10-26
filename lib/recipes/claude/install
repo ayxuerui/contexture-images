@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+installer="$(mktemp)"
+trap 'rm -f "${installer}"' EXIT
+"$(dirname "$0")/../_lib/fetch-installer" https://claude.ai/install.sh "${installer}"
+bash "${installer}"

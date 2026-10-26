@@ -1,0 +1,8 @@
+#!/bin/sh
+# Move the clone to the newest stable release tag. Nothing to do when it is already there.
+set -eu
+dir="${HOME}/.local/share/hermes-webui"
+tag="v$("$(dirname "$0")/../_lib/github-latest" nesquena/hermes-webui)"
+[ "$(git -C "${dir}" describe --tags --exact-match 2>/dev/null)" != "${tag}" ] || exit 0
+git -C "${dir}" fetch --quiet --depth 1 origin tag "${tag}"
+git -C "${dir}" checkout --quiet --force "${tag}"

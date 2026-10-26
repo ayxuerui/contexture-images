@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+installer="$(mktemp)"
+trap 'rm -f "${installer}"' EXIT
+"$(dirname "$0")/../_lib/fetch-installer" https://chatgpt.com/codex/install.sh "${installer}"
+CODEX_NON_INTERACTIVE=true sh "${installer}"
