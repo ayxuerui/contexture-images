@@ -89,7 +89,8 @@ with tempfile.TemporaryDirectory() as temporary:
         start(f'HERMES_INSTALL_COMMIT={older_commit}')
         eventually(healthy, what=f'Hermes {older} installed and serving')
         assert older in agent('hermes', '--version').stdout
-        assert sh('readlink -f "$(command -v hermes)"').startswith('/home/agent/.local/share/hermes-agent/')
+        assert sh('command -v hermes').strip() == '/home/agent/.local/bin/hermes'
+        assert sh('test -x ~/.local/share/hermes-agent/.hermes/bin/hermes && echo ok').strip() == 'ok'
         assert sh('test -f ~/.local/share/hermes-webui/server.py && echo ok').strip() == 'ok'
         # RUNNING means up for supervisord's 5 seconds, not yet listening: the dashboard can take longer.
         serving = lambda port: agent('curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
@@ -114,12 +115,20 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # --- update ---------------------------------------------------------------------------
         pids = {p: pid(p) for p in ('hermes-gateway', 'hermes-dashboard', 'hermes-webui')}
+        update_started = docker('exec', NAME, 'date', '-u', '+%Y-%m-%dT%H:%M:%SZ').stdout.strip()
         out = agent('runtime-install', '--update', 'hermes').stdout
         assert latest in agent('hermes', '--version').stdout, out
         assert f'hermes: updated from {older} to {latest}' in out, out
         eventually(healthy, seconds=300, what='healthy after update')
         for program, old in pids.items():
             assert pid(program) not in ('0', old), f'{program} was not restarted onto {latest}'
+        # `hermes update` relaunches dashboards it does not know are supervised; the one serving
+        # must be supervisord's, or the next restart finds the port taken.
+        dashboard = pid('hermes-dashboard')
+        time.sleep(20)
+        assert pid('hermes-dashboard') == dashboard, 'the supervised dashboard is restarting in a loop'
+        logs = docker('logs', '--since', update_started, NAME).stdout
+        assert 'already running on this host' not in logs, 'a dashboard outside supervisord took the port'
         print(f'PASS: --update runs `hermes update` {older} -> {latest}; gateway, dashboard and WebUI restarted')
 
         # --- backup and restore ------------------------------------------------------------------
@@ -133,7 +142,11 @@ HOME_BACKUP_DESTINATION=/tmp/restic HOME_BACKUP_MIN_FREE_MB=100 home-backup
         listing = sh('RESTIC_REPOSITORY=/tmp/restic RESTIC_PASSWORD_FILE=~/.config/contexture/restic-password restic ls latest')
         assert '/tmp/harness-backup/hermes/hermes.zip' in listing
         assert '/home/agent/.claude/projects/p/x.jsonl' in listing
-        assert '/home/agent/.hermes/state.db' not in listing, 'state.db must go in through hermes backup, not as a file'
+        live = [line for line in listing.splitlines()
+                if line.startswith('/home/agent/.hermes/') and line.endswith(('.db', '.db-wal', '.db-shm', '.db-journal'))]
+        assert not live, ('live databases must go in through hermes backup, not as files', live)
+        print('ok: other files beside the databases: '
+              + ', '.join(l for l in listing.splitlines() if l.startswith('/home/agent/.hermes/state.db')))
         assert '/home/agent/.hermes/config.yaml' in listing, 'the rest of ~/.hermes goes in as files'
         assert '/home/agent/.local/share/hermes-agent/run_agent.py' in listing, 'the installed harness is backed up'
         agent('supervisorctl', 'stop', 'runtime:hermes-gateway', 'runtime:hermes-dashboard', 'runtime:hermes-webui')

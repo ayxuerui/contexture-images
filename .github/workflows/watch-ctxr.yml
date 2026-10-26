@@ -57,15 +57,15 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # The shared compose file names the same version in its image tag; CI asserts the two agree.
+      # The Hermes image's shared compose file names the same version in its image tag; CI asserts
+      # the two agree. The runtime image carries no ctxr (stores install it into their homes and
+      # update it daily), so runtime/compose.yaml is not touched.
       - name: Bump CTXR_VERSION
         if: steps.compare.outputs.changed == 'true'
         run: |
           printf '%s\n' "${{ steps.compare.outputs.latest }}" > CTXR_VERSION
           sed -i -E 's#^(x-image: &image ghcr\.io/ayxuerui/contexture-hermes:)[^[:space:]]+$#\1${{ steps.compare.outputs.latest }}#' \
             harnesses/hermes/compose.yaml
-          sed -i -E 's#^(x-image: &image ghcr\.io/ayxuerui/contexture-runtime:)[^[:space:]]+$#\1${{ steps.compare.outputs.latest }}#' \
-            runtime/compose.yaml
 
       - name: Open a bump PR
         if: steps.compare.outputs.changed == 'true'
@@ -87,8 +87,9 @@ jobs:
             There is no separate tagging step to remember; the tag is written afterwards, as
             a record of what shipped rather than as the thing that causes it.
 
-            **Merging this rolls it out.** Stores that include `harnesses/hermes/compose.yaml` or `runtime/compose.yaml`
-            from `main` pull the new version on their next `up`. Since ctxr 0.10.0 the schema gate
+            **Merging this rolls it out** to stores that include `harnesses/hermes/compose.yaml`
+            from `main`, on their next `up`. Stores on `runtime/compose.yaml` are unaffected: they
+            install ctxr into their homes and take each release within a day. Since ctxr 0.10.0 the schema gate
             is both-directional and `ctxr migrate` no longer exists, so a CLI newer than a store's
             `contexture.yaml` `schema_version` is refused until the migration pull request
             `ctxr-update-store` opens on that store is merged. Read the release notes for a

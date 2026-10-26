@@ -9,9 +9,10 @@
 #   include:
 #     - https://github.com/ayxuerui/contexture-images.git#main:runtime/compose.yaml
 #
-# Same contract as the old file: no pin on the store side; the image is named by its ctxr version,
-# asserted equal to CTXR_VERSION by CI and bumped with it by watch-ctxr.yml; every service pulls on
-# every `up`; nothing here is deployment-specific. What changes for a store:
+# No pin on the store side: the image is named by its own version, asserted equal to RUNTIME_VERSION
+# by CI; every service pulls on every `up`; nothing here is deployment-specific. The image carries
+# no ctxr: it is installed into a home on first boot and updated daily, like every tool. What
+# changes for a store:
 #
 #   - the volume key `data` (HERMES_HOME at /opt/data) is now `home` (the agent's home at
 #     /home/agent). A store that maps its volume by name renames the key and keeps the name; a
@@ -25,7 +26,7 @@
 #   - the backup variables are HOME_BACKUP_* and HOME_CONFIG_*; the HARNESS_BACKUP_* and
 #     HARNESS_CONFIG_* names they replace are still read when the new ones are unset.
 
-x-image: &image ghcr.io/ayxuerui/contexture-runtime:0.33.0
+x-image: &image ghcr.io/ayxuerui/contexture-runtime:1.0.0
 
 # What a container has: the harnesses (the agents), the tools they use, and the harnesses'
 # programs to run. Defaulted here, so one added to the default reaches every store on merge; a
@@ -73,15 +74,15 @@ x-config-env: &config-env
   HOME_CONFIG_EXCLUDE: ${HOME_CONFIG_EXCLUDE:-${HARNESS_CONFIG_EXCLUDE:-}}
 
 services:
-  # One-off provisioning: clone the store into the store volume and persist the gh credential in
-  # the agent's home.
+  # One-off provisioning: install ctxr into the agent's home, clone the store into the store volume
+  # and persist the gh credential in the home.
   #   docker compose --profile init run --rm workspace-init
   workspace-init:
     image: *image
     pull_policy: always
     profiles: ["init"]
     restart: "no"
-    entrypoint: ["ctxr-provision"]
+    entrypoint: ["runtime-provision"]
     environment:
       REPO_URL: ${REPO_URL:-}
       GH_TOKEN: ${GH_TOKEN:-}
@@ -157,27 +158,37 @@ services:
           memory: ${AGENTS_MEMORY_LIMIT:-6G}
           cpus: "${AGENTS_CPUS:-3.0}"
 
-  # Browsing, the approval page, and landing what was approved. Unchanged from the old file but for
-  # the image: its own container, because it holds the App key and agents must not, and it mounts
-  # neither the home nor anything installed in it: its ctxr is the image's.
+  # Browsing, the approval page, and landing what was approved. Its own container, because it holds
+  # the App key and agents must not, with its own home (`serve-home`) that no agent container
+  # mounts: the same image, entrypoint and supervisor as `agents`, selecting only ctxr and its
+  # `ctxr-serve` program. ctxr installs there on first boot and updates daily, restarting serve.
   serve:
     image: *image
     pull_policy: always
     restart: unless-stopped
-    entrypoint: ["ctxr"]
-    command: ["serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "/store"]
-    user: "${PUID:-10000}:${PGID:-10000}"
     environment:
       <<: *approval-env
+      HARNESSES: ""
+      TOOLS: ctxr
+      HARNESS_SERVICES: ctxr-serve
+      CONTEXTURE_STORE_ROOT: /store
+      CTXR_SERVE_PORT: ${CTXR_SERVE_PORT:-18080}
+      PUID: ${PUID:-10000}
+      PGID: ${PGID:-10000}
+      RUNTIME_UPDATE_INTERVAL: ${RUNTIME_UPDATE_INTERVAL:-${HARNESS_UPDATE_INTERVAL:-86400}}
+      # The store's own changes are the agents' to open; serve only reads and lands.
+      CTXR_UPDATE_STORE_ENABLED: "0"
     secrets:
       - github-app-key
     volumes:
+      - serve-home:/home/agent
       - store:/store
     healthcheck:
-      test: ["CMD-SHELL", "curl -sS -o /dev/null http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"]
+      test: ["CMD-SHELL", "runtime-install status"]
       interval: 30s
-      timeout: 5s
-      start_period: 15s
+      timeout: 15s
+      # The first boot installs ctxr.
+      start_period: 5m
       retries: 5
     deploy:
       resources:
@@ -281,5 +292,7 @@ volumes:
   # The agent's home: every harness and tool, their state, and every provider login. NEVER
   # `docker compose down -v`: only interactive re-authentication recovers what this holds.
   home:
+  # serve's home: its ctxr and nothing else. Never mounted by an agent container. Safe to drop.
+  serve-home:
   # The store checkout the agents work in.
   store:

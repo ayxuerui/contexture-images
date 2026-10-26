@@ -154,6 +154,16 @@ class RuntimeInstall(unittest.TestCase):
         self.assertEqual(installed['alpha'], {'state': 'ok', 'kind': 'harness', 'version': '1.0.0'})
         self.assertEqual(installed['tooly']['kind'], 'tool')
 
+    def test_install_only_installs_and_renders_nothing(self):
+        self.recipe('booted', hooks=('boot',))
+        self.run_tool('--install-only', HARNESSES='booted', TOOLS='tooly')
+        self.assertTrue((self.home / '.local/bin/booted').exists())
+        self.assertTrue((self.home / '.local/bin/tooly').exists())
+        self.assertFalse((self.run_dir / 'programs.conf').exists(), 'workspace-init runs no supervisor')
+        self.assertFalse((self.fake / 'hooks-booted').exists(), 'no boot hooks either')
+        (self.fake / 'fail-beta').touch()
+        self.run_tool('--install-only', HARNESSES='beta', expect=1)
+
     def test_failed_install_does_not_stop_the_others(self):
         (self.fake / 'fail-alpha').touch()
         self.run_tool(HARNESSES='alpha,beta')

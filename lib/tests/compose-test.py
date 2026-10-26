@@ -136,14 +136,14 @@ class Runtime(unittest.TestCase):
     def everything(self):
         return self.render('--profile', 'init', '--profile', 'backup', '--profile', 'migrate')
 
-    def test_version_matches_ctxr_version(self):
-        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+    def test_version_matches_runtime_version(self):
+        version = (ROOT / 'RUNTIME_VERSION').read_text().strip()
         pinned = re.findall(r'^x-image: &image ghcr\.io/ayxuerui/contexture-runtime:(\S+)$', RUNTIME.read_text(), re.M)
         self.assertEqual(pinned, [version])
 
     def test_every_service_pulls_the_version_tag(self):
         model = self.everything()
-        version = (ROOT / 'CTXR_VERSION').read_text().strip()
+        version = (ROOT / 'RUNTIME_VERSION').read_text().strip()
         self.assertEqual({s['image'] for s in model['services'].values()},
                          {f'ghcr.io/ayxuerui/contexture-runtime:{version}'})
         self.assertEqual({s.get('pull_policy') for s in model['services'].values()}, {'always'})
@@ -196,8 +196,17 @@ class Runtime(unittest.TestCase):
 
     def test_serve_never_sees_the_home(self):
         model = self.render()
-        sources = {m['source'] for m in model['services']['serve']['volumes']}
-        self.assertEqual(sources, {'store'})
+        serve = model['services']['serve']
+        mounts = {m['target']: m['source'] for m in serve['volumes']}
+        self.assertEqual(mounts, {'/home/agent': 'serve-home', '/store': 'store'},
+                         'serve has a home of its own, never the agents\'')
+        for name, service in self.everything()['services'].items():
+            if name != 'serve':
+                self.assertNotIn('serve-home', {m['source'] for m in service.get('volumes', [])}, name)
+        self.assertIsNone(serve.get('entrypoint'), 'the runtime entrypoint installs its ctxr')
+        env = serve['environment']
+        self.assertEqual((env['HARNESSES'], env['TOOLS'], env['HARNESS_SERVICES']), ('', 'ctxr', 'ctxr-serve'))
+        self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
         self.assertNotIn('secrets', agents)

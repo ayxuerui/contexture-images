@@ -49,9 +49,26 @@ for itself the same way a person would, and it survives a recreate and a restore
   the installer's directories in the home, or `runtime-install` reinstalling whatever fails its
   `check`.
 
-**Unchanged:** the platform image and its tag, supervision, the programs and their restarts when a
-version moves, the ctxr schema guard (`serve` runs the image's ctxr and never mounts the home), and
-Hermes' backup through `hermes backup`.
+**ctxr leaves the image too.** ctxr is a tool like cb: installed into a home on first boot,
+updated daily. `serve`, which holds the approval App key and so must never run code the agents can
+rewrite, runs the same image with only ctxr selected, on a home of its own (the `serve-home`
+volume, never mounted by an agent container). `workspace-init` installs ctxr into the agents' home
+before provisioning (`runtime-provision`). The image therefore has its own version,
+`RUNTIME_VERSION`, starting at 1.0.0; `watch-ctxr.yml` no longer touches `runtime/compose.yaml`.
+
+*Against, steelmanned:* an image ctxr was the one copy nothing could move, so `serve` and the store
+schema moved together, by image release, and a guard held the agents' ctxr to it. With two
+containers updating on their own timers, a release that raises the store schema breaks each
+container's ctxr from its next update until the migration PR merges and `/store` is pulled:
+`serve` goes unhealthy and the agents' ctxr commands fail. Also considered and declined: `serve`
+on the agents' home (the agent could rewrite the ctxr `serve` runs with the key), `serve`
+following the agents' version, and holding back releases the store's schema cannot take yet.
+Accepted (Rui, 2026-10-26): schema-raising releases are rare (10 from 0.20.0 to 0.34.0), the
+fix is merging one PR on GitHub, which needs nothing that is down, the outage is loud, and the
+README's runbook ends it in minutes rather than at the next daily update.
+
+**Unchanged:** supervision, the programs and their restarts when a version moves, `serve` in its
+own container, and Hermes' backup through `hermes backup`.
 
 ## Why
 

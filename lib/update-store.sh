@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bring a Contexture store up to the ctxr this image ships, through a reviewed pull request.
+# Bring a Contexture store up to the ctxr in use, through a reviewed pull request.
 #
 # Shipped as `ctxr-update-store`, and run once at container start by the `store-update` s6
 # service, in every container of a stack unless CTXR_UPDATE_STORE_ENABLED=0. Every container
@@ -8,8 +8,8 @@
 # ones that remain, a lock on the store's git directory lets exactly one do the work, and the
 # others step aside. Safe to run by hand, too, as the runtime user.
 #
-# WHY IT EXISTS. A store here gets a newer ctxr by image pull, not by anyone running the upgrade
-# skill, so nothing re-renders its contexture-owned files afterwards -- the release advisory is
+# WHY IT EXISTS. A store here gets a newer ctxr by image pull (the Hermes image) or by the runtime
+# image's daily update into the home, not by anyone running the upgrade skill, so nothing re-renders its contexture-owned files afterwards -- the release advisory is
 # silent because installed equals published. Worse, a release that raises the store schema
 # version makes every ctxr command refuse the store, and the agent cannot run the skill that
 # would fix it. Hermes has the same problem with its own config.yaml and migrates it at boot.
@@ -106,7 +106,7 @@ ensure_pr() {
     return
   fi
   if [ "$DRY_RUN" = 1 ]; then log "DRY RUN: would open a pull request: $_title"; return; fi
-  _body="Produced by \`ctxr-update-store\` at container start: \`ctxr update --worktree\` with the ctxr this image ships ($(ctxr --version 2>/dev/null)). It migrated and/or re-rendered on this branch only, and never wrote the canonical clone. Review it like any other change; once merged, the next start pulls it into the canonical clone and removes this branch."
+  _body="Produced by \`ctxr-update-store\` at container start: \`ctxr update --worktree\` with the ctxr in use ($(ctxr --version 2>/dev/null)). It migrated and/or re-rendered on this branch only, and never wrote the canonical clone. Review it like any other change; once merged, the next start pulls it into the canonical clone and removes this branch."
   if _url=$(cd "$STORE" && gh pr create --base "$(default_branch)" --head "$_branch" --title "$_title" --body "$_body" 2>&1); then
     log "opened $_url"
   else

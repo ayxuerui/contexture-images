@@ -8,7 +8,7 @@ Published today:
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `ctxr`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness in it**: each is installed into the agent's home by its own installer. See [The runtime image](#the-runtime-image) |
+| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION`. See [The runtime image](#the-runtime-image) |
 | `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | The earlier image, every tool baked in: Hermes agent + WebUI + `gh` + `ctxr` + `codex`, `agent-browser`, `cb`, `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq`. No store runs it any more; the sections below that name it describe it |
 
 ## The runtime image
@@ -59,10 +59,24 @@ update, renders `HARNESS_SERVICES` into supervisor programs, and restarts a harn
 when its version moves, whether it moved itself or was updated. `docker exec -u agent <container>
 runtime-install status` reports every harness, tool and program; it is the healthcheck.
 
-**Two ctxr, on purpose.** `serve` holds the store's approval App key, so it never mounts the home
-and runs the image's ctxr. The agents run the home's. They may differ by releases but never by
-store schema: ctxr's install and update refuse a release whose schema is above the image's
-(`lib/recipes/ctxr/schema-guard`), and that release waits for the image.
+**`serve` has a home of its own.** It holds the store's approval App key, so it never mounts the
+agents' home: code the agents can rewrite must never run beside that key. It runs the same image,
+entrypoint and supervisor with only ctxr selected (`TOOLS=ctxr`, `HARNESS_SERVICES=ctxr-serve`), on
+its own `serve-home` volume at `/home/agent`. Its ctxr installs there on first boot and updates
+daily, like the agents', each container on its own timer. `workspace-init` installs ctxr into the
+agents' home (`runtime-provision`) before it provisions.
+
+**When a ctxr release raises the store schema** (rare: it was 10 from 0.20.0 to 0.34.0), each
+container's ctxr refuses the store from its next daily update until the store migrates: `serve`
+goes unhealthy, and agents' ctxr commands fail. The agents container's update opens the migration
+pull request (`ctxr-update-store`). Merge it on GitHub, then end the outage at once instead of
+waiting for the next daily run:
+
+```sh
+docker compose exec -u agent agents runtime-install --update ctxr   # newest ctxr, then pulls /store
+docker compose exec -u agent serve  runtime-install --update ctxr
+docker compose exec -u agent agents ctxr-update-store               # pulls /store if ctxr had not moved
+```
 
 **Adding a tool** is a directory under `lib/recipes/` (see its README): an npm package is a
 three-line `recipe.toml`; anything else is its publisher's installer as an `install` script.

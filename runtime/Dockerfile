@@ -2,15 +2,17 @@
 #
 # See docs/design/harnesses-in-home.md. The image holds what must match across containers, needs
 # root, or is run by something other than the agent: Debian, tini, supervisord, the `agent` user,
-# Node, a platform python venv, ctxr (the fallback copy), gh, the backup and skill tools, and the
-# runtime-*/home-*/ctxr-* scripts. Every harness (Hermes, its WebUI, claude, codex, agy) and every
-# tool (ctxr, cb, agent-browser) is installed into the agent's home by its publisher's own
-# installer -- npm packages with `npm install -g` into NPM_CONFIG_PREFIX=~/.local -- chosen by the
-# HARNESSES / TOOLS / HARNESS_SERVICES compose variables, backed up with the home, and updated
-# without an image.
+# Node, a platform python venv, gh, the backup and skill tools, and the runtime-*/home-*/ctxr-*
+# scripts. No ctxr: every harness (Hermes, its WebUI, claude, codex, agy) and every tool (ctxr, cb,
+# agent-browser) is installed into the agent's home by its publisher's own installer -- npm
+# packages with `npm install -g` into NPM_CONFIG_PREFIX=~/.local -- chosen by the HARNESSES / TOOLS
+# / HARNESS_SERVICES compose variables, backed up with the home, and updated without an image.
+# `serve` runs this image too, with a home of its own (see lib/recipes/ctxr/recipe.toml).
+#
+# The image has its own version (RUNTIME_VERSION), no longer ctxr's.
 #
 # Build context is the REPO ROOT, so lib/ is reachable:
-#   docker build -f runtime/Dockerfile --build-arg CTXR_VERSION=$(cat CTXR_VERSION) .
+#   docker build -f runtime/Dockerfile .
 ARG DEBIAN_IMAGE=debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 FROM ${DEBIAN_IMAGE}
 
@@ -60,22 +62,11 @@ ARG NODE_SHA256_ARM64=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13f
 COPY lib/install-node.sh /tmp/install-node.sh
 RUN /tmp/install-node.sh && rm -f /tmp/install-node.sh
 
-# --- Contexture toolchain: gh + ctxr ---------------------------------------------------------
-# The same script the Hermes image runs. CTXR_VERSION is still the image tag.
+# --- Contexture toolchain: gh only -----------------------------------------------------------
+# The same script the Hermes image runs, told to skip ctxr: ctxr is a tool installed into the home.
 ARG GH_VERSION=2.98.0
-ARG CTXR_VERSION
 COPY lib/install-contexture-toolchain.sh /tmp/install-contexture-toolchain.sh
-RUN /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
-
-# The image's ctxr is the fallback, not the first: it moves from /usr/local/bin to the END of PATH.
-# In the agents container the `ctxr` tool (lib/recipes/ctxr) is installed and updated in the home
-# and so wins; `serve` and the one-shots, which never mount the agent-writable home's binaries,
-# fall through to this one. See lib/recipes/ctxr/recipe.toml for why there are two.
-RUN set -eux; \
-    install -d /usr/local/lib/contexture/bin; \
-    ln -s /usr/local/lib/node_modules/ctxr-cli/dist/bin.js /usr/local/lib/contexture/bin/ctxr; \
-    rm /usr/local/bin/ctxr; \
-    /usr/local/lib/contexture/bin/ctxr --version
+RUN CTXR_VERSION=none /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
 
 # --- Backup and skill tools ------------------------------------------------------------------
 ARG RESTIC_VERSION=0.19.1
@@ -124,6 +115,7 @@ RUN set -eux; \
 #   home-migrate             turns a Hermes-image volume into a runtime home, and back
 #   harness-remote           the remote-control wrapper, shared with the Hermes image
 #   runtime-store-update     the store update at start, then the recipes' store-updated hooks
+#   runtime-provision        workspace-init: ctxr into the home, then ctxr-provision
 #   ctxr-update-store, ctxr-provision, ctxr-install-circleback-script   as in the Hermes image
 # The names these replaced (harness-install, harness-schedule, harness-backup, harness-config-push,
 # harness-migrate-home) stay as links, for a compose file or an operator's habit still using them.
@@ -139,6 +131,7 @@ COPY lib/config-push.sh /usr/local/lib/contexture/config-push.sh
 COPY runtime/config-push.sh /usr/local/bin/home-config-push
 COPY lib/home-migrate.py /usr/local/bin/home-migrate
 COPY runtime/store-update.sh /usr/local/bin/runtime-store-update
+COPY runtime/provision.sh /usr/local/bin/runtime-provision
 COPY runtime/entrypoint.sh /usr/local/bin/runtime-entrypoint
 COPY runtime/supervisord.conf /etc/supervisor/supervisord.conf
 COPY runtime/profile.d/10-runtime-path.sh /etc/profile.d/10-runtime-path.sh
@@ -148,14 +141,14 @@ RUN set -eux; \
       /usr/local/bin/ctxr-update-store /usr/local/bin/ctxr-provision /usr/local/bin/runtime-entrypoint \
       /usr/local/bin/ctxr-install-circleback-script /usr/local/bin/home-backup \
       /usr/local/lib/contexture/config-push.sh /usr/local/bin/home-config-push \
-      /usr/local/bin/home-migrate /usr/local/bin/runtime-store-update; \
+      /usr/local/bin/home-migrate /usr/local/bin/runtime-store-update /usr/local/bin/runtime-provision; \
     ln -s runtime-install /usr/local/bin/harness-install; \
     ln -s runtime-schedule /usr/local/bin/harness-schedule; \
     ln -s home-backup /usr/local/bin/harness-backup; \
     ln -s home-config-push /usr/local/bin/harness-config-push; \
     ln -s home-migrate /usr/local/bin/harness-migrate-home; \
     chmod -R a+rX /usr/local/share/contexture /etc/profile.d/10-runtime-path.sh; \
-    for script in runtime-entrypoint ctxr-install-circleback-script home-config-push runtime-store-update; do \
+    for script in runtime-entrypoint ctxr-install-circleback-script home-config-push runtime-store-update runtime-provision; do \
       sh -n "/usr/local/bin/${script}"; \
     done; \
     sh -n /usr/local/lib/contexture/config-push.sh; \
@@ -163,11 +156,11 @@ RUN set -eux; \
       /usr/local/bin/runtime-install /usr/local/bin/harness-remote /usr/local/bin/home-backup \
       /usr/local/bin/home-migrate
 
-# PATH: the platform first, then ~/.local/bin -- where every harness's installer and npm's global
-# prefix put their binaries -- then the image's ctxr, last, so the home's ctxr wins and a harness
-# never shadows gh or the platform python. NPM_CONFIG_PREFIX is what makes `npm install -g` work
-# as the agent, and puts the package in the home, backed up with everything else.
-ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/agent/.local/bin:/usr/local/lib/contexture/bin \
+# PATH: the platform first, then ~/.local/bin, where every harness's installer and npm's global
+# prefix put their binaries, so a harness never shadows gh or the platform python.
+# NPM_CONFIG_PREFIX is what makes `npm install -g` work as the agent, and puts the package in the
+# home, backed up with everything else.
+ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/agent/.local/bin \
     NPM_CONFIG_PREFIX=/home/agent/.local \
     RUNTIME_STATUS_FILE=/home/agent/.local/state/contexture/runtime-status.json
 
@@ -175,7 +168,7 @@ ENV PATH=/opt/contexture/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/
 # every service -- is consistent with them.
 RUN HARNESSES=hermes,hermes-webui,claude,codex,agy \
     TOOLS=ctxr,cb,agent-browser \
-    HARNESS_SERVICES=hermes-gateway,hermes-dashboard,hermes-webui,claude-remote,codex-remote,agy-remote \
+    HARNESS_SERVICES=hermes-gateway,hermes-dashboard,hermes-webui,claude-remote,codex-remote,agy-remote,ctxr-serve \
       runtime-install check
 
 WORKDIR /home/agent

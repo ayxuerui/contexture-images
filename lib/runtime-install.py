@@ -7,6 +7,7 @@ home is backed up. See docs/design/harnesses-in-home.md.
 
     runtime-install                 at boot: install what is missing, render the programs
     runtime-install --update [NAME] run each one's update; restart the programs of what moved
+    runtime-install --install-only  install what is missing; no hooks, no programs (workspace-init)
     runtime-install status          exit 0 only when everything is installed and every program serves
     runtime-install check           validate the variables against the recipes; install nothing
     runtime-install wait            block until everything selected is installed (the backup jobs)
@@ -390,7 +391,7 @@ def previous_versions():
         return {}
 
 
-def converge(update_all, only=()):
+def converge(update_all, only=(), programs=True):
     recipes, selected, services, offered = configuration()
     with locked():
         before = previous_versions()
@@ -431,6 +432,8 @@ def converge(update_all, only=()):
             for name in moved:
                 run_hook(recipes[name], 'updated')
             rendered, skipped = read_rendered(), []
+        elif not programs:
+            rendered, skipped = [], []
         else:
             for name in selected:
                 if name in ready:
@@ -671,10 +674,13 @@ def main(argv):
     if argv[:1] in ([], ['--boot']):
         converge(update_all=False)
         return 0
+    if argv[:1] == ['--install-only']:
+        report = converge(update_all=False, programs=False)
+        return 0 if all(e['state'] == 'ok' for e in report['installed'].values()) else 1
     if argv[:1] == ['--update']:
         converge(update_all=True, only=tuple(argv[1:]))
         return 0
-    print('usage: runtime-install [--boot | --update [NAME...] | status | check | wait | hook NAME | describe | allowlist PATH]',
+    print('usage: runtime-install [--boot | --update [NAME...] | --install-only | status | check | wait | hook NAME | describe | allowlist PATH]',
           file=sys.stderr)
     return 2
 

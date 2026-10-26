@@ -1,16 +1,18 @@
-# The Contexture CLI, a tool: `npm install -g ctxr-cli` into NPM_CONFIG_PREFIX (~/.local), so the
-# shipped ctxr-upgrade skill's own `npm install -g ctxr-cli@latest` works from a session too.
+# The Contexture CLI, a tool: `npm install -g ctxr-cli` into NPM_CONFIG_PREFIX (~/.local), installed on
+# a container's first boot and updated daily like every npm tool. The image carries no ctxr. An
+# agent's own `npm install -g ctxr-cli@latest` (the ctxr-upgrade skill's) writes the same place.
 #
-# Two ctxr exist on purpose. The image keeps its own (the image tag is its version) for what must
-# never run code the agent can write: `serve`, which holds the store's approval App key and never
-# mounts the home, and the one-shots. It is at the END of PATH, so in the agents container this
-# one -- ~/.local/bin/ctxr -- is the ctxr in use.
-#
-# They may differ by releases, never by store schema. schema_version gates every ctxr in both
-# directions (src/config/load.ts), so `install` and `update` refuse a release whose
-# SUPPORTED_SCHEMA_VERSION is above the image's ctxr: that release waits for the image, which
-# carries serve along with it (a first install then takes the image's own version). The
-# schema has been 10 from 0.20.0 to 0.34.0 while ctxr shipped almost daily.
+# Two containers install it, each into its own /home/agent. The agents container's home is the
+# agents'. `serve` holds the store's approval App key, so it has a home of its own -- the
+# `serve-home` volume, which no agent container mounts -- and its ctxr is the same package at the
+# same path where no agent can write it. Both follow the latest release, so serve and the agents
+# meet a new store schema within a day of each other.
 kind = "tool"
 npm = "ctxr-cli"
 binaries = ["ctxr"]
+
+# The store's browsing, approval and landing server. Selected only in the serve container.
+[services.ctxr-serve]
+command = ["ctxr", "serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "${CONTEXTURE_STORE_ROOT:-/store}"]
+directory = "${CONTEXTURE_STORE_ROOT:-/store}"
+probe = "http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"
