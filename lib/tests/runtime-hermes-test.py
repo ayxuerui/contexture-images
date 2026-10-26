@@ -162,11 +162,16 @@ HOME_BACKUP_DESTINATION=/tmp/restic HOME_BACKUP_MIN_FREE_MB=100 home-backup
         # not. The recipe's check must catch it and reinstall, not start a half-installed Hermes.
         docker('stop', '-t', '30', NAME)
         docker('run', '--rm', '--entrypoint', 'sh', '-v', f'{NAME}-home:/home/agent', IMAGE,
-               '-c', 'rm -rf /home/agent/.hermes/tools /home/agent/.hermes/installs')
+               '-c', 'rm -rf /home/agent/.hermes/tools /home/agent/.hermes/installs && '
+                     # And the shim an earlier layout left, which Hermes' installer will not replace.
+                     'printf "#!/bin/sh\\nexec /opt/harnesses/hermes/0.22.5/src/.hermes/bin/hermes \\"\\$@\\"\\n" '
+                     '> /home/agent/.local/bin/hermes')
         docker('start', NAME)
         eventually(healthy, seconds=900, what='healthy after Hermes\' runtime was removed')
         assert 'hermes: installing' in docker('logs', NAME).stdout
-        print('PASS: a checkout whose runtime is gone is reinstalled at boot, and serves')
+        assert 'removed ~/.local/bin/hermes' in docker('logs', NAME).stdout
+        assert '/.local/share/hermes-agent/' in sh('cat ~/.local/bin/hermes')
+        print('PASS: a checkout whose runtime is gone, or a shim from an earlier layout, is reinstalled at boot, and serves')
 
         # --- config repository ---------------------------------------------------------------------
         staged = sh('''

@@ -5,5 +5,8 @@
 # makes runtime-install re-run the installer, which rebuilds it.
 launcher="${HOME}/.local/share/hermes-agent/.hermes/bin/hermes"
 [ -f "${launcher}" ] || exit 1
+# The `hermes` on PATH must run this checkout. A shim left by an earlier layout runs one that is
+# gone; failing here makes `install` replace it.
+grep -q "${HOME}/.local/share/hermes-agent/" "${HOME}/.local/bin/hermes" 2>/dev/null || exit 1
 python="$(sed -n '2s/^exec \([^ ]*\) .*/\1/p' "${launcher}")"
 [ -n "${python}" ] && [ -x "${python}" ]

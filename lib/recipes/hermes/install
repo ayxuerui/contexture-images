@@ -5,10 +5,22 @@
 # which is what a failing `check` asks for. HERMES_INSTALL_COMMIT (--commit) is for the tests,
 # which start a release behind to have an update to take.
 set -eu
+checkout="${HOME}/.local/share/hermes-agent"
+# The installer never replaces a ~/.local/bin shim that points at another Hermes ("without taking
+# over another installation's files"), so a shim left by an earlier layout -- the runtime image's
+# /opt/harnesses -- would keep every `hermes` on PATH running a checkout that is gone. Remove those
+# first, so the installer writes its own.
+for shim in hermes hermes-acp hermes-agent; do
+  path="${HOME}/.local/bin/${shim}"
+  if [ -f "${path}" ] && ! grep -q "${checkout}/" "${path}"; then
+    rm -f "${path}"
+    echo "hermes: removed ~/.local/bin/${shim}, which ran another Hermes"
+  fi
+done
 installer="$(mktemp)"
 trap 'rm -f "${installer}"' EXIT
 "$(dirname "$0")/../_lib/fetch-installer" https://hermes-agent.nousresearch.com/install.sh "${installer}"
-bash "${installer}" --dir "${HOME}/.local/share/hermes-agent" --non-interactive --skip-computer-use \
+bash "${installer}" --dir "${checkout}" --non-interactive --skip-computer-use \
   ${HERMES_INSTALL_COMMIT:+--commit "${HERMES_INSTALL_COMMIT}"}
 # Drop the dependency environments of checkouts that no longer exist (an earlier image's).
 "${HOME}/.local/bin/hermes" pm gc >/dev/null 2>&1 || true
