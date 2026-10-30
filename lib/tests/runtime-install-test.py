@@ -214,9 +214,25 @@ class RuntimeInstall(unittest.TestCase):
         self.run_tool(HARNESSES='alpha')
         (self.fake / 'fail-alpha').touch()
         self.publish('alpha', '2.0.0')
-        self.run_tool('--update', HARNESSES='alpha')
+        out = self.run_tool('--update', HARNESSES='alpha', expect=1)
+        self.assertIn('FAILED: alpha', out, 'exits non-zero so the scheduler sends the failure out')
         entry = self.status()['installed']['alpha']
         self.assertEqual((entry['state'], entry['version']), ('failed', '1.0.0'))
+
+    def test_a_full_disk_holds_updates_and_fails_the_healthcheck(self):
+        self.run_tool(HARNESSES='alpha')
+        self.publish('alpha', '2.0.0')
+        full = {'RUNTIME_MIN_FREE_MB': str(10 ** 12)}
+        out = self.run_tool('--update', HARNESSES='alpha', expect=1, **full)
+        self.assertIn('not updating: only', out)
+        self.assertEqual(self.calls('alpha'), ['install 1.0.0'], 'no update runs on a full disk')
+        self.assertIn('disk: only', self.run_tool('status', expect=1, HARNESSES='alpha', **full))
+        self.run_tool('--update', HARNESSES='alpha')
+        self.assertEqual(self.calls('alpha')[-1], 'update 2.0.0', 'with room again, the update runs')
+
+    def test_the_daily_update_reports_to_the_notify_target(self):
+        self.run_tool(HARNESSES='alpha', HARNESS_NOTIFY_TARGET='telegram')
+        self.assertIn('HARNESS_SCHEDULE_NOTIFY="telegram"', self.programs())
 
     def test_update_of_one_name_leaves_the_others(self):
         self.run_tool(HARNESSES='alpha,beta')

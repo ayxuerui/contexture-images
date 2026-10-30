@@ -112,8 +112,13 @@ services:
       CONTEXTURE_STORE_ROOT: /store
       PUID: ${PUID:-10000}
       PGID: ${PGID:-10000}
-      # The daily update of what does not update itself, in seconds; 0 turns it off.
+      # The daily update of what does not update itself, in seconds; 0 turns it off. A failed
+      # update, or one held back because the disk is below RUNTIME_MIN_FREE_MB, goes out through
+      # `hermes send` to HARNESS_NOTIFY_TARGET, as the backup schedulers' failures do.
       RUNTIME_UPDATE_INTERVAL: ${RUNTIME_UPDATE_INTERVAL:-${HARNESS_UPDATE_INTERVAL:-86400}}
+      HARNESS_NOTIFY_TARGET: ${HARNESS_NOTIFY_TARGET:-}
+      # Below this much free space the healthcheck fails and updates are held (default 2048).
+      RUNTIME_MIN_FREE_MB: ${RUNTIME_MIN_FREE_MB:-2048}
       CTXR_UPDATE_STORE_ENABLED: ${CTXR_UPDATE_STORE_ENABLED:-1}
       # The store's skills, for Hermes. `$$` keeps the variable for Hermes to expand.
       HERMES_SKILLS_EXTERNAL_DIRS: '["$$CONTEXTURE_STORE_ROOT/.agents/skills"]'
@@ -176,6 +181,7 @@ services:
       PUID: ${PUID:-10000}
       PGID: ${PGID:-10000}
       RUNTIME_UPDATE_INTERVAL: ${RUNTIME_UPDATE_INTERVAL:-${HARNESS_UPDATE_INTERVAL:-86400}}
+      RUNTIME_MIN_FREE_MB: ${RUNTIME_MIN_FREE_MB:-2048}
       # The store's own changes are the agents' to open; serve only reads and lands.
       CTXR_UPDATE_STORE_ENABLED: "0"
     secrets:
