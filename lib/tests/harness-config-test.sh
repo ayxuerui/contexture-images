@@ -1,18 +1,16 @@
 #!/bin/sh
 # Regression tests for the guards that keep a harness home's config backup safe.
 #
-# Three things are asserted here, and each one has already gone wrong somewhere:
+# Two things are asserted here, and each one has already gone wrong somewhere:
 #
-#   1. The ALLOWLIST keeps what it claims and ignores what it claims -- in BOTH directions. The
-#      277-line original this was generalized from grew by `auto: ignore ...` commits landing
-#      after something had already been pushed; a both-ways matrix is what turns that into a
-#      failing test instead of a postmortem.
-#   2. The COMMIT GUARD refuses credential files, oversize blobs and gitlinks. A live repo today
-#      carries a 95.6 MB blob against GitHub's 100 MB hard limit, and a mode-160000 gitlink with
-#      no .gitmodules whose restore is therefore already broken.
-#   3. The ARCHIVE VERIFIER refuses a `hermes backup` zip with no usable state.db. hermes' own
-#      _safe_copy_db fails closed on a 10s lock deadline and the caller then just continues, so
-#      a contended database is absent from an archive that still exits 0.
+#   1. config-push.sh's RENDERERS -- per-store extensions, nested includes, the bundled-skills
+#      exclusion -- applied to an allowlist (fixtures/allowlist.gitignore, the Hermes image's
+#      last one; the runtime's is rendered from the recipes and tested in runtime-install-test.py).
+#   2. The COMMIT GUARD refuses credential files, oversize blobs and gitlinks, and the VISIBILITY
+#      GATE refuses a public remote. A live repo once carried a 95.6 MB blob against GitHub's
+#      100 MB hard limit, and a mode-160000 gitlink with no .gitmodules whose restore was broken.
+#
+# The `hermes backup` archive checks live in lib/recipes/hermes/snapshot (hermes-snapshot-test.py).
 #
 # Runs as root against repos owned by another uid: the exact shape of the production failure
 # that has already broken the provisioner's refresh path twice. Needs root, git and python3;
@@ -24,8 +22,7 @@ set -u
 
 SCRIPT_DIR=$(dirname "$0")
 PUSH_SRC="$SCRIPT_DIR/../config-push.sh"
-BACKUP_SRC="$SCRIPT_DIR/../../harnesses/hermes/harness-backup.sh"
-ALLOWLIST="$SCRIPT_DIR/../../harnesses/hermes/hermes-config.gitignore"
+ALLOWLIST="$SCRIPT_DIR/fixtures/allowlist.gitignore"
 # A private work area, not fixed /tmp paths. Leftovers from an earlier run once made the
 # provisioner's test report another version's results -- the one failure mode a test must not
 # have.
@@ -33,7 +30,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 STORE_UID=10000
 
-for f in "$PUSH_SRC" "$BACKUP_SRC" "$ALLOWLIST"; do
+for f in "$PUSH_SRC" "$ALLOWLIST"; do
   [ -f "$f" ] || { echo "cannot find $f"; exit 1; }
 done
 command -v python3 >/dev/null 2>&1 || { echo "needs python3"; exit 1; }
@@ -42,15 +39,12 @@ command -v python3 >/dev/null 2>&1 || { echo "needs python3"; exit 1; }
 # sourcing an empty file and reporting green.
 GUARD="$WORK/guard.sh"
 VIS="$WORK/visibility.sh"
-VERIFY="$WORK/verify.sh"
 { echo 'log() { echo "[harness-config-push] $*"; }'
   sed -n '/^# >>> commit-guard/,/^# <<< commit-guard/p' "$PUSH_SRC"; } > "$GUARD"
 { echo 'log() { echo "[harness-config-push] $*"; }'
   sed -n '/^# >>> visibility-gate/,/^# <<< visibility-gate/p' "$PUSH_SRC"; } > "$VIS"
-sed -n '/^# >>> archive-verify/,/^# <<< archive-verify/p' "$BACKUP_SRC" > "$VERIFY"
 grep -q '_max_mb'          "$GUARD"  || { echo "FAIL: commit-guard markers missing or moved";    exit 1; }
 grep -q 'PUBLIC'           "$VIS"    || { echo "FAIL: visibility-gate markers missing or moved"; exit 1; }
-grep -q 'SQLite format 3'  "$VERIFY" || { echo "FAIL: archive-verify markers missing or moved";  exit 1; }
 . "$GUARD"
 . "$VIS"
 
@@ -76,7 +70,6 @@ render_bundled() {
 }
 grep -q 'bundled-skills' "$PUSH_SRC" || {
   echo "FAIL: bundled-skills markers missing or moved in $PUSH_SRC"; exit 1; }
-. "$VERIFY"
 
 git config --global user.email harness-test@example.invalid
 git config --global user.name "harness test"
@@ -97,34 +90,6 @@ mkrepo() {
 }
 stage() { git -c safe.directory="$WORK/repo" -C "$WORK/repo" add -f "$@" >/dev/null 2>&1; }
 guard() { harness_config_commit_guard "$WORK/repo" "${1:-95}" >/dev/null 2>&1; echo $?; }
-
-echo "== the allowlist keeps what it claims =="
-rm -rf "$WORK/al"; mkdir -p "$WORK/al"; git init -q "$WORK/al"
-sed 's/^@HARNESS_CONFIG_EXTENSIONS@$//' "$ALLOWLIST" > "$WORK/al/.gitignore"
-ign() { git -C "$WORK/al" check-ignore --no-index -q "$1" && echo ignored || echo kept; }
-for p in config.yaml SOUL.md cron/jobs.json sessions/session_a.json webui/sessions/a.json \
-         webui/attachments/a.png \
-         home/.claude/projects/p/a.jsonl home/.codex/sessions/2026/a.jsonl \
-         user-skills/s/SKILL.md scripts/check_backup.py memories/m.md; do
-  check "keeps $p" "$(ign "$p")" "kept"
-done
-
-# NOTE skills/<name> is deliberately absent from this list. It is no longer a blanket deny:
-# what is excluded under skills/ is computed from the harness's own bundle at render time, and
-# has its own block below. Only the curator's dotfiles are unconditional here.
-echo "== the allowlist ignores what it claims =="
-for p in webui/.pbkdf2_key webui/.signing_key webui/.sessions.json \
-         webui/.login_attempts.json webui/shares/x.json webui/last_workspace.txt \
-         .env auth.json .git-credentials google_token.json mcp-tokens/cb.json \
-         home/.config/gh/hosts.yml home/.claude/.credentials.json home/.codex/auth.json \
-         home/.gemini/oauth_creds.json home/.config/rclone/rclone.conf \
-         .restic-password state.db state.db-wal checkpoints/a \
-         state-snapshots/s/state.db lazy-packages/x.so \
-         skills/.curator_backups/x skills/.curator_state \
-         sessions/request_dump_1.json webui/sessions/_run_journal/a.jsonl \
-         profiles/leilei/.env cron/executions.db logs/a.log node/x bin/y; do
-  check "ignores $p" "$(ign "$p")" "ignored"
-done
 
 echo "== per-store extensions apply, and the secret tail still outranks them =="
 rm -rf "$WORK/al2"; mkdir -p "$WORK/al2"; git init -q "$WORK/al2"
@@ -269,32 +234,6 @@ HARNESS_CONFIG_ALLOW_UNVERIFIED_REMOTE=1
 export HARNESS_CONFIG_ALLOW_UNVERIFIED_REMOTE
 check "PUBLIC is refused even WITH the override" "$(vis)" "1"
 unset HARNESS_CONFIG_ALLOW_UNVERIFIED_REMOTE
-
-echo "== the archive verifier =="
-python3 - "$WORK" <<'PY'
-import os, sqlite3, sys, zipfile
-w = sys.argv[1]
-db = os.path.join(w, "real.db")
-c = sqlite3.connect(db); c.execute("create table t(x)"); c.commit(); c.close()
-good = open(db, "rb").read()
-def mk(name, members):
-    with zipfile.ZipFile(os.path.join(w, name), "w") as z:
-        for n, d in members.items(): z.writestr(n, d)
-mk("good.zip",   {"state.db": good,           "config.yaml": b"a: 1"})
-mk("nodb.zip",   {"config.yaml": b"a: 1",     "sessions/x.json": b"{}"})
-mk("empty.zip",  {"state.db": b"",            "config.yaml": b"a: 1"})
-mk("zeroed.zip", {"state.db": b"\x00" * 4096, "config.yaml": b"a: 1"})
-mk("nocfg.zip",  {"state.db": good})
-mk("notdb.zip",  {"state.db": b"x" * 200,     "config.yaml": b"a: 1"})
-PY
-av() { harness_backup_verify_archive "$WORK/$1" >/dev/null 2>&1; echo $?; }
-check "a complete archive passes"        "$(av good.zip)"   "0"
-check "missing state.db refused"         "$(av nodb.zip)"   "1"
-check "empty state.db refused"           "$(av empty.zip)"  "1"
-check "zeroed state.db refused"          "$(av zeroed.zip)" "1"
-check "missing config.yaml refused"      "$(av nocfg.zip)"  "1"
-check "state.db with bad magic refused"  "$(av notdb.zip)"  "1"
-check "unreadable archive refused"       "$(av absent.zip)" "1"
 
 echo
 echo "passed=$PASS failed=$FAIL"

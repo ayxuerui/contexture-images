@@ -1,15 +1,15 @@
 # contexture-images
 
-Container images that pair an agent harness runtime with the
-[Contexture](https://github.com/ayxuerui/contexture) toolchain, so a deployment consumes a
-published image instead of maintaining its own Dockerfile.
-
-Published today:
+The container image a [Contexture](https://github.com/ayxuerui/contexture) store runs on, and the
+shared compose file every store includes, so a deployment consumes a published image instead of
+maintaining its own Dockerfile.
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION`. See [The runtime image](#the-runtime-image) |
-| `ghcr.io/ayxuerui/contexture-hermes` | `nousresearch/hermes-agent` | The earlier image, every tool baked in: Hermes agent + WebUI + `gh` + `ctxr` + `codex`, `agent-browser`, `cb`, `claude`, `agy` + `restic`, `rclone` + `pandoc`, `jq`. No store runs it any more; the sections below that name it describe it |
+| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION` |
+
+The earlier image, `contexture-hermes` (Hermes' upstream image with every tool baked in), is
+retired: no store runs it, and it is no longer built. Its tags stay on GHCR.
 
 ## The runtime image
 
@@ -84,32 +84,18 @@ Then add its name to `TOOLS` in `runtime/compose.yaml`. An agent can also instal
 itself, for one store, with the tool's own installer or `npm install -g`; it lands in the home
 and is backed up with it.
 
-## Using it
-
-```dockerfile
-ARG CONTEXTURE_HERMES_TAG
-FROM ghcr.io/ayxuerui/contexture-hermes:${CONTEXTURE_HERMES_TAG}
-
-# …your own toolchain, your own provisioning script, your own write-safe roots
-COPY setup.sh /usr/local/bin/setup.sh
-RUN chmod +x /usr/local/bin/setup.sh
-```
-
-The image deliberately declares no `ENTRYPOINT`, `CMD`, `EXPOSE`, `HEALTHCHECK` or `VOLUME` —
-those are deployment choices, and baking them in would silently override your compose file.
-
 ## Deploying a store with the shared compose file
 
-`harnesses/hermes/compose.yaml` is the whole deployment: provisioning, the `agents` service
-(Hermes, its dashboard and WebUI, and any remote agents), the read-only `serve` reader, and the
-backup one-shots and schedulers. A store includes it remotely instead of maintaining its own
-copy, so a fix made here reaches every store on its next `up`.
+`runtime/compose.yaml` is the whole deployment: provisioning (`workspace-init`), the `agents`
+service, the `serve` browsing and approval server, and the backup one-shots and schedulers. A
+store includes it remotely instead of maintaining its own copy, so a fix made here reaches every
+store on its next `up`.
 
 ```yaml
 # compose.yaml in the store
 name: my-store
 include:
-  - https://github.com/ayxuerui/contexture-images.git#main:harnesses/hermes/compose.yaml
+  - https://github.com/ayxuerui/contexture-images.git#main:runtime/compose.yaml
 ```
 
 ```sh
@@ -118,14 +104,10 @@ API_SERVER_KEY=...
 HERMES_WEBUI_ALLOWED_ORIGINS=https://agents.example.com
 ```
 
-**No pin in the store.** This repo decides the ctxr version: the shared file names the image by
-it (`contexture-hermes:<version>`), CI asserts that equals `CTXR_VERSION`, and the bump bot
-updates both. A store brings its schema up to a new ctxr through the pull request
-`ctxr-update-store` opens at container start, exactly as when a store pins a tag by hand.
-
-The version tag is rebuilt in place whenever the image changes, so every service declares
-`pull_policy: always`: each `up` fetches the current build, and a cached older one never runs
-under a newer compose file. Two consequences:
+**No pin in the store.** The shared file names the image by `RUNTIME_VERSION`, and CI asserts the
+two agree. The version tag is rebuilt in place whenever the image changes, so every service
+declares `pull_policy: always`: each `up` fetches the current build, and a cached older one never
+runs under a newer compose file. Two consequences:
 
 - **Wait for the release.** A merge here is visible to stores at once, while its image takes a
   few minutes to publish. Running `up` in between pairs the new compose file with the previous
@@ -145,18 +127,16 @@ appended:
 ```yaml
 services:
   agents:
-    container_name: my-store-hermes      # keep an existing name for scripts and tunnels
-    ports:
-      - "127.0.0.1:8642:8642"
+    container_name: my-store-agents       # keep an existing name for scripts and tunnels
     environment:
+      HARNESS_SERVICES: hermes-gateway,hermes-dashboard,hermes-webui,claude-remote
       HERMES_WEBUI_TRUST_FORWARDED_HOST: "1"   # only behind a proxy you run
       HERMES_WEBUI_TRUST_FORWARDED_PROTO: "1"
       HERMES_WEBUI_TRUST_FORWARDED_FOR: "1"
       HERMES_WEBUI_SSE_CHUNKED: "1"            # a buffering proxy such as Cloudflare
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
 volumes:
-  data:
-    name: my-store_my-store-data          # an existing volume, by its full name
+  home:
+    name: my-store_data                   # an existing volume, by its full name
     external: true
 ```
 
@@ -165,32 +145,32 @@ ingress networks, container names, forwarded-header trust, chat platforms, WebUI
 browser endpoints. Forwarded headers are trusted only when the WebUI is reachable solely through
 your own proxy, so that switch lives beside the ingress that justifies it.
 
-**Moving an existing store.** The services are named `agents`, `serve`, `workspace-init`,
-`harness-backup`, `harness-config-push`, `harness-backup-cron` and `harness-config-cron`, with
-volumes `data` (HERMES_HOME, provider logins included) and `store`. Map each existing volume by
-its full name with `external: true`; Compose then fails instead of silently creating an empty
-one. Keep old service names reachable with `container_name`, or with network aliases on the
-ingress network. `docker compose config` shows the merged result before anything starts.
+The services are `agents`, `serve`, `workspace-init`, `harness-backup`, `harness-config-push`,
+`harness-migrate-home`, `harness-backup-cron` and `harness-config-cron` (the backup services keep
+their old names; the commands they run are `home-backup`, `home-config-push` and `home-migrate`).
+The volumes are `home` (the agent's home, every login included), `serve-home` (serve's ctxr) and
+`store`. Map an existing volume by its full name with `external: true`; Compose then fails instead
+of silently creating an empty one. `docker compose config` shows the merged result before anything
+starts.
 
 | Variable | Default | |
 |---|---|---|
 | `API_SERVER_KEY` | required | Gateway API key |
 | `HERMES_WEBUI_ALLOWED_ORIGINS` | required | Comma-separated public origins, with scheme |
 | `HERMES_WEBUI_PASSWORD` | blank | Optional WebUI password |
-| `HARNESS_REMOTE_AGENTS` | blank | Remote agents to run; see below |
-| `HARNESS_REMOTE_{CLAUDE,CODEX,AGY}_ARGS` | blank | JSON argument overrides; blank uses the defaults |
+| `HARNESS_REMOTE_{CLAUDE,CODEX,AGY}_ARGS` | blank | JSON argument overrides; see below |
 | `AGENTS_MEMORY_LIMIT`, `AGENTS_CPUS` | `6G`, `3.0` | Budget for the `agents` container |
 | `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
 | `PUID`, `PGID` | `10000` | Runtime uid/gid |
 | `REPO_URL`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` | blank | `workspace-init` only; it names what is missing |
-| `HARNESS_BACKUP_*`, `RESTIC_PACK_SIZE`, `RCLONE_CONFIG_GDRIVE_*` | see the file | Backups; a blank destination is off |
-| `HARNESS_CONFIG_REPO`, `HARNESS_CONFIG_DRY_RUN` | blank | Config push |
-| `HARNESS_BACKUP_INTERVAL`, `HARNESS_CONFIG_INTERVAL`, `HARNESS_NOTIFY_TARGET` | daily, 6h, blank | Schedulers |
+| `HOME_BACKUP_*`, `RESTIC_PACK_SIZE`, `RCLONE_CONFIG_GDRIVE_*` | see the file | Backups; a blank destination is off |
+| `HOME_CONFIG_REPO`, `HOME_CONFIG_DRY_RUN` | blank | Config push |
+| `HOME_BACKUP_INTERVAL`, `HOME_CONFIG_INTERVAL`, `HARNESS_NOTIFY_TARGET` | daily, 6h, blank | Schedulers |
 | `CONTEXTURE_GITHUB_APP_ID`, `CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH` | blank | The store's recording identity as a GitHub App; `serve` only. See below |
 
-CI checks that the file's image version equals `CTXR_VERSION` (the bump bot updates both), that
-it renders with only the required variables, that it stays portable, and that a store's include
-and override merge as described here.
+CI checks that the file's image version equals `RUNTIME_VERSION`, that it renders with only the
+required variables, that it stays portable, and that a store's include and override merge as
+described here.
 
 ## Approving changes from the review page
 
@@ -218,45 +198,23 @@ deployment half:
   after each Approve and every five minutes. Its log carries each run, prefixed `land:`; a change
   that cannot land shows as blocked on its approval page. `change_approval.land: manual` in the
   store's config turns this off.
-- **Never the agents, so `serve` keeps its own container.** The key is not given to `agents`, for
-  the same reason `GH_TOKEN` is not: every shell command an agent runs can read that container's
-  environment and files. An agent that could use the recording identity could approve its own
-  change in a decider's name, and one App can serve every store one operator runs.
+- **Never the agents, so `serve` keeps its own container and its own home.** The key is not given
+  to `agents`, for the same reason `GH_TOKEN` is not: every shell command an agent runs can read
+  that container's environment and files. An agent that could use the recording identity could
+  approve its own change in a decider's name, and one App can serve every store one operator
+  runs. For the same reason `serve` never runs code the agents can write: its ctxr lives in its
+  own `serve-home` volume, which no agent container mounts.
 
-With no App ID set, `serve` sees blank variables and behaves exactly as before. A store that set
-`COMPOSE_PROFILES=approvals` for the old `land-cron` can drop it; the profile no longer selects
-anything.
+With no App ID set, `serve` sees blank variables and records nothing.
 
-## Running several harnesses in one container
+## Remote-control sessions
 
-The Hermes image can also supervise Claude Code, Codex and agy remote control alongside
-Hermes, its profiles, dashboard and WebUI. It uses the existing s6-overlay startup path;
-keep the image entrypoint and the usual `gateway run` command. Remote services are
-**off by default** and do not change one-shot containers or existing deployments.
-
-```yaml
-services:
-  agents:
-    image: ghcr.io/ayxuerui/contexture-hermes:<published-tag>
-    command: ["gateway", "run"]
-    environment:
-      HARNESS_REMOTE_AGENTS: claude,codex,agy
-      CONTEXTURE_STORE_ROOT: /store
-      HARNESS_REMOTE_HOME: /opt/data/home
-      HARNESS_REMOTE_CLAUDE_ARGS: '["--spawn","same-dir","--permission-mode","plan","--name","my-store"]'
-    volumes:
-      - store:/store
-      - data:/opt/data
-```
-
-`HARNESS_REMOTE_AGENTS` is a comma-separated subset of `claude,codex,agy`; blank means
-none. Unknown names fail validation. Enabled agents require an existing absolute
-`CONTEXTURE_STORE_ROOT` and home directory. Remote children run as the image's `hermes`
-user, after the normal UID/GID setup, with the selected store as their working directory.
-`HARNESS_REMOTE_HOME` defaults to `$HERMES_HOME/home` (`/opt/data/home`), the same home
-the store-update service and Hermes tool calls use; it supplies CLI credentials and
-session history, while Hermes keeps its separate `HERMES_HOME`. Credential files remain
-in each harness's native directories; they are never baked into the image.
+Claude Code, Codex and agy remote control run as supervised programs beside Hermes, selected in
+`HARNESS_SERVICES` (`claude-remote`, `codex-remote`, `agy-remote`); none runs by default. Each
+starts in the store (`CONTEXTURE_STORE_ROOT`) as `agent`, with the agent's home, where every
+CLI's login lives. A program that exits is restarted on its own, without its siblings; the daily
+update restarts only the programs of a harness whose version moved, and claude, codex and agy
+update themselves.
 
 `HARNESS_REMOTE_<AGENT>_ARGS` overrides arguments after `<agent> remote-control` as a
 JSON array of strings, passed directly without shell evaluation. Defaults are:
@@ -276,7 +234,7 @@ to create an unprivileged user namespace. Docker's default seccomp profile refus
 `echo` included, fails before it starts with `bwrap: No permissions to create a new namespace`.
 Installing a system `bubblewrap` does not help; only the permission is missing. The container is
 the boundary instead, exactly as for Hermes, Claude and agy beside it: no Docker socket, only the
-store and data volumes, the unprivileged runtime uid, and store changes reaching `main` only
+store and home volumes, the unprivileged runtime uid, and store changes reaching `main` only
 through reviewed pull requests. What that gives up is a second layer inside the container —
 Codex can read and write what the runtime user can, including the shared home's logins, and has
 network access. Relaxing the container's seccomp profile to let the inner sandbox run would weaken
@@ -288,56 +246,39 @@ this integration as version-sensitive: verify dispatch and actual authenticated
 remote connectivity after agy upgrades. Its installer cannot pin a release exactly.
 No permission-bypass flag is added; agy's daemon controls its own session policy.
 
-Each remote agent has a separate s6 slot (`/run/service/{claude,codex,agy}-remote`),
-tagged logs, a ten-second restart backoff and bounded process-group shutdown. A
-failed agent restarts without interrupting its siblings. Container upgrades, restarts
-and memory exhaustion can affect every harness; budget resources for concurrent use.
-Hermes continues to use its existing per-profile supervision.
-
 ```sh
-docker exec <container> harness-remote check-config
-docker exec <container> harness-remote status
-docker exec <container> /command/s6-svc -r /run/service/codex-remote
-docker exec <container> codex remote-control pair
+docker exec -u agent <container> runtime-install status            # every program, and what it serves
+docker exec -u agent <container> supervisorctl restart runtime:codex-remote
+docker exec -it -u agent <container> codex remote-control pair
 ```
 
-`status` returns nonzero if any enabled remote agent lacks a live child, including
-retry backoff. Disabled agents are skipped. Add it to the deployment's existing
-Hermes healthcheck; it checks **process health**, not authentication or relay readiness.
-A live disconnected process can pass. Complete CLI login and verify each provider's
-remote client separately. agy CLI login is distinct from editor login and may need
-Linux keyring support; no authentication state is provisioned by this capability.
+`status` checks that each program is running, not that it is authenticated or connected to its
+relay: a live but disconnected process passes. Complete each CLI's login and check its remote
+client separately.
 
 `cb`, Circleback's CLI, ships logged out. Log in once per store with
-`docker exec -it -u hermes -e HOME=/opt/data/home <container> cb auth login --api-key`. That is
-the HOME the agent's tool calls use, so the key lands in `/opt/data/home/.config/circleback` and
-survives an image pull. A bare `docker exec` runs as root, and `-u hermes` alone gets
-`HOME=/opt/data`, where the agent never looks. Setting
+`docker exec -it -u agent <container> cb auth login --api-key`; the key lands in
+`~/.config/circleback` in the home, backed up and kept across recreates. Setting
 `CIRCLEBACK_API_KEY` in the store's environment also works and overrides the saved key. Use a
 read-and-write key if an agent should tag meetings.
 
-All harnesses share a network namespace. Keep remote transports outbound/local and
-expose only the deployment's intended authenticated Hermes endpoints. Keep backup
-schedulers and a read-only store server separate if they must survive agent failures.
-Do not run two remote servers using the same machine identity during cutover.
+Every program shares the container's network namespace. Keep remote transports outbound or local,
+and publish only the deployment's intended, authenticated endpoints. Do not run two remote
+servers with the same machine identity at once, as a store moves between hosts.
 
-Validation: `python3 lib/tests/harness-remote-test.py` needs no image or credentials;
-`python3 lib/tests/harness-remote-container-test.py <image>` exercises real s6-overlay
-with fake agents, no network and disposable state. CI runs both.
+## Backing up the home
 
-## Backing up the harness home
-
-A Contexture store is version-controlled by definition. The harness home it runs against —
-`$HERMES_HOME`, the agent's `config.yaml`, `SOUL.md`, `cron/jobs.json`, `user-skills/`, every
-chat transcript and all of its credentials — is not. Two commands cover it, and they are not
+A Contexture store is version-controlled by definition. The agent's home it runs against is not:
+every installed harness and tool, Hermes' `config.yaml`, `SOUL.md`, `cron/jobs.json` and
+`user-skills/`, every chat transcript, and all of its credentials. Two commands cover it, and they are not
 redundant:
 
-| | `harness-config-push` | `harness-backup` |
+| | `home-config-push` | `home-backup` |
 |---|---|---|
-| Destination | a private git repo (`HARNESS_CONFIG_REPO`) | a restic repository (`HARNESS_BACKUP_DESTINATION`) |
+| Destination | a private git repo (`HOME_CONFIG_REPO`) | a restic repository (`HOME_BACKUP_DESTINATION`) |
 | Purpose | track config, so it can be **diffed** | disaster recovery |
 | Credentials | never — excluded by the allowlist and by a guard | yes, encrypted at rest |
-| Restore | `git clone`, human-readable, no password | `restic restore` → `hermes import <zip>` |
+| Restore | `git clone`, human-readable, no password | `home-backup restore [SNAPSHOT]`, with the agents stopped |
 
 Restoring from the git repo alone gives you a harness that cannot authenticate to anything.
 A restic repository cannot tell you what changed in `SOUL.md` last week. Run both, or pick the
@@ -350,12 +291,12 @@ either rebuild the multi-gigabyte snapshot four times a day or thin the config h
 point a day. Apart, a failed config push never costs the snapshot, and each failure notice
 names the job that failed.
 
-Like `ctxr-provision`, these ship but never run. `harness-schedule` is the third command, and
-what a deployment points a long-lived service at:
+`runtime-schedule` is what each scheduler service runs, and failures go out through
+`hermes send` to `HARNESS_NOTIFY_TARGET`:
 
 ```sh
 HARNESS_SCHEDULE_INTERVAL=86400 HARNESS_SCHEDULE_NOTIFY=telegram \
-  harness-schedule harness-backup
+  runtime-schedule home-backup
 ```
 
 Absence of the destination variable is the off switch, so an unconfigured store does nothing.
@@ -383,8 +324,9 @@ Three of its behaviours are load-bearing rather than incidental, and each is cov
   turn one bad run into a hot loop re-running the job continuously — a bill on a
   per-operation destination, a lockout on a rate-limited one.
 
-**`harness-backup` archives through `hermes backup`, not the live tree**, and that is the
-central decision. Hermes copies every `*.db` with `sqlite3.backup()` — a consistent image even
+**Hermes' databases go in through `hermes backup`, not as files**, and that is the central
+decision; everything else in the home is backed up as files, installed software included, so a
+restored home runs without reinstalling anything. Hermes copies every `*.db` with `sqlite3.backup()` — a consistent image even
 under a live writer — and deliberately omits the `.db-wal`/`.db-shm` sidecars, because pairing
 a fresh main file with stale sidecar state produces a torn restore. A file-level snapshot of a
 gigabyte-scale live `state.db` backs up exactly that torn pair. Going through hermes' own format
@@ -392,18 +334,17 @@ also means restoring with `hermes import`, which refuses to overwrite `gateway_s
 `processes.json` — restore those onto a different host and the gateway comes up stuck
 "starting".
 
-The wrapper exists for one reason beyond glue: it **asserts the archive contains a usable
+Hermes' recipe (`lib/recipes/hermes/snapshot`) **asserts the archive contains a usable
 `state.db`**. Hermes' snapshot helper fails closed on a ten-second lock deadline, and the caller
 then logs and continues — so a contended database is simply absent from an archive that still
 exits 0. Without the assertion you get a green status over a backup that cannot restore, which
 is the failure this whole thing replaces.
 
-**The allowlist ships as an image artifact.** `harness-config-push` renders
-`hermes-config.gitignore` into the home it tracks: ignore everything, then re-open only durable
-state. A denylist loses every time a new root entry appears — and since `$HERMES_HOME` was once
+**The allowlist is rendered from the recipes.** `home-config-push` writes it into the home it
+tracks (`runtime-install allowlist`): ignore everything, then re-open, per selected recipe, only
+its durable state, with a credential denylist last that nothing can re-open. A denylist loses every time a new root entry appears — and since `$HERMES_HOME` was once
 `$HOME` for the in-process WebUI agent, "a new root entry" meant agent scratch, published before
-anyone noticed. Extend it with `HARNESS_CONFIG_INCLUDE` / `HARNESS_CONFIG_EXCLUDE`; don't fork
-it. A home whose `.gitignore` lacks the managed marker is left untouched, so adopting the
+anyone noticed. Extend it with `HOME_CONFIG_INCLUDE` / `HOME_CONFIG_EXCLUDE`; don't fork it. A home whose `.gitignore` lacks the managed marker is left untouched, so adopting the
 command changes no policy on day one.
 
 Two guards, doing different jobs. The **commit guard** refuses staged credential *files*,
@@ -414,10 +355,8 @@ guard can read what is inside them. Neither substitutes for the other, and neith
 they refuse, leave the index alone, and fail the same way next run.
 
 ```sh
-HARNESS_CONFIG_REPO=https://github.com/you/harness-config.git \
-  HARNESS_CONFIG_DRY_RUN=1 harness-config-push    # what WOULD be committed
-
-HARNESS_BACKUP_DESTINATION=rclone:gdrive:harness/pkm harness-backup
+docker compose --profile backup run --rm -e HOME_CONFIG_DRY_RUN=1 harness-config-push  # what WOULD be committed
+docker compose --profile backup run --rm harness-backup                               # a snapshot now
 ```
 
 `restic` speaks S3, B2, Azure, GCS, SFTP and REST natively; `rclone` is shipped alongside so a
@@ -426,14 +365,15 @@ destination it doesn't speak — Google Drive, Dropbox, OneDrive — is reachabl
 OAuth cannot be completed in one, and a password whose only copy lives in the directory being
 backed up is not a password.
 
-It does ship `ctxr-provision`, but never runs it: clone, authenticate, verify, hand ownership to
-the runtime uid. Point a one-shot service at it and gate that service yourself. What differs
-between stores is passed in — see the script's header — rather than forked into a private copy.
+`workspace-init` (`runtime-provision`) is the one-shot that sets a store up: ctxr into the home,
+then `ctxr-provision` -- clone, authenticate, verify, hand ownership to the runtime uid. What
+differs between stores is passed in -- see the script's header -- rather than forked into a
+private copy.
 
-## Pointing `harness-backup` at Google Drive
+## Pointing `home-backup` at Google Drive
 
 restic speaks S3, B2, Azure, GCS, SFTP and REST natively — if your destination is one of those,
-set `HARNESS_BACKUP_DESTINATION` to the restic URL and skip this section. Google Drive is
+set `HOME_BACKUP_DESTINATION` to the restic URL and skip this section. Google Drive is
 reached through rclone instead, which is why `rclone` ships alongside `restic`.
 
 **Make your own OAuth client.** rclone's built-in client ID is shared by every rclone user
@@ -477,7 +417,7 @@ RCLONE_CONFIG_GDRIVE_CLIENT_SECRET=<secret>
 RCLONE_CONFIG_GDRIVE_SCOPE=drive.file
 RCLONE_CONFIG_GDRIVE_TOKEN={"access_token":"...","refresh_token":"...","expiry":"..."}
 
-HARNESS_BACKUP_DESTINATION=rclone:gdrive:harness-backup/<store>
+HOME_BACKUP_DESTINATION=rclone:gdrive:harness-backup/<store>
 ```
 
 `RCLONE_CONFIG_<NAME>_<KEY>` defines a whole remote with no `rclone.conf` on disk at all. Note
@@ -485,10 +425,10 @@ it is `RCLONE_CONFIG_GDRIVE_*`, which names a remote — not `RCLONE_DRIVE_*`, w
 backend defaults and still needs a config file to name the remote.
 
 **Environment rather than `rclone.conf` is deliberate.** A config file would live at
-`$HERMES_HOME/home/.config/rclone/rclone.conf` — *inside the directory being backed up*. That is
+`~/.config/rclone/rclone.conf` — *inside the home being backed up*. That is
 a chicken-and-egg failure on the day you need it: reaching the backup requires credentials whose
 only copy went down with the volume. The same reasoning applies to
-`HARNESS_BACKUP_PASSWORD_FILE`; keep both wherever your deployment keeps its other secrets, and
+`HOME_BACKUP_PASSWORD_FILE`; keep both wherever your deployment keeps its other secrets, and
 a copy somewhere a dead machine cannot take with it.
 
 The trade is that rclone cannot write a refreshed access token back to an env-defined remote, so
@@ -496,10 +436,10 @@ it re-derives one from the refresh token on every run and logs a NOTICE saying s
 refresh tokens are durable, so this is noise rather than a problem — but if one is ever revoked,
 you repeat the `rclone authorize` step.
 
-**Scope these to the backup invocation, never to the gateway.** In a long-running container's
+**Scope these to the backup services, never to `agents`.** In a long-running container's
 environment, the client secret and refresh token are readable by every shell command the agent
 runs. That is the same argument that keeps `GH_TOKEN` off the gateway and gives it only to the
-one-shot that runs `ctxr-provision`; a scheduled `harness-backup` should be gated the same way.
+one-shot that runs `ctxr-provision`; the shared compose file gives them to the backup services only.
 
 **One tuning knob worth setting for Drive.** Google throttles per-user API calls far harder than
 object storage does, and restic's default 16 MiB pack size turns a ~2 GB archive into well over
@@ -513,77 +453,29 @@ Set it before the first snapshot — it applies to newly written packs only, so 
 started at the default keeps its existing packs. The cost is that a restore fetches in coarser
 chunks than it strictly needs.
 
-## The tag is the ctxr version
+## Versions
 
-`contexture-hermes:0.10.0` contains `ctxr-cli@0.10.0`, and the build fails if that is not true.
+`RUNTIME_VERSION` is the image's version and its tag. Bump it for a change a store must not miss
+on its next `up`. Every other change to `runtime/` or `lib/` republishes the same tag, and every
+build is also published as `<version>-<sha>`. Merging to main is what publishes (`release.yml`),
+and the git tag `runtime-v<version>` is written afterwards, as a record.
 
-This matters more than it looks. Since ctxr 0.10.0 the store schema gate is **both-directional**
-— a CLI older *or* newer than a store's `contexture.yaml` `schema_version` is refused at config
-load — and `ctxr migrate` was removed, so there is nothing to bridge a mismatch with. A drifted
-pin doesn't degrade; every `ctxr` call fails outright, including the ones running from cron at
-03:00. Putting the version in the tag makes the coupling visible at the point where a deployment
-chooses it.
+What runs inside a store has no version here: each harness and tool follows its publisher's
+release, installed on first boot and updated daily (`runtime-update`), or updating itself.
 
-`CTXR_VERSION` at the repo root is the single source of truth, and the whole release flow hangs
-off it:
+## Keeping the store current after a ctxr update
 
-1. `watch-ctxr.yml` polls npm hourly and opens a bump PR when a newer `ctxr-cli` exists.
-2. CI builds that branch. The build asserts the installed `ctxr --version` equals the pin, so a
-   green check means the new version actually installs and runs in the image.
-3. **Merging the PR publishes.** `release.yml` triggers on a push to `main` touching
-   `CTXR_VERSION` — merging is a user push, so it fires normally.
-4. After every leg succeeds, a `v<version>` tag is created as a record of what shipped.
-
-`:<version>` names the ctxr inside the image and moves when the image is rebuilt — a new tool
-or a newer base republishes it. `:<version>-<sha>` is the immutable handle if you need one. The
-build asserts the ctxr version either way, so the tag never lies about what it carries.
-
-The tag is an output, not an input. It has to be: a tag pushed by a workflow using
-`GITHUB_TOKEN` does not trigger other workflows, so tagging could never have been what causes a
-publish. `workflow_dispatch` remains available to rebuild a version by hand.
-
-Publishing is automated, and for stores that include the shared compose file from `main` it is
-also the rollout: merging a ctxr bump changes the version their next `up` pulls. The judgement
-(does this ctxr match each store's `schema_version`?) therefore belongs at the merge, not later.
-A store on a newer schema-raising release is refused by `ctxr` until the pull request
-`ctxr-update-store` opens on it is merged. Nothing reads `:latest`.
-
-## Upgrading the tools
-
-Hermes' own install tree is immutable at runtime, and upstream's documented upgrade path for this
-base is to pull the new image and recreate the container ([Hermes Docker guide — Upgrading](https://hermes-agent.nousresearch.com/docs/user-guide/docker#upgrading)). Every tool this image
-adds follows that same path, so nothing here upgrades itself in a running container.
-
-That only works if the image actually moves, so every agent CLI is pinned by an `ARG` in
-`harnesses/hermes/Dockerfile`, and `watch-agent-clis.yml` opens a bump PR when its publisher has
-a newer one, the same way `watch-ctxr.yml` does for ctxr:
-
-| Tool | Pin | Read from |
-|---|---|---|
-| `codex`, `agent-browser` | exact, asserted by the build | npm |
-| `claude` | exact, asserted by the build | the `stable` channel its installer reads |
-| `agy` | a cache key and an expectation — the installer takes no version, so a mismatch warns rather than fails | the manifest its installer reads |
-
-Merging a bump republishes `:<ctxr version>` — the tag names ctxr, so a tool bump moves the
-same tag. A deployment pinned to it upgrades with `docker compose pull && docker compose up -d`;
-its `/opt/data` volume carries over.
-
-For something occasional, upstream's own advice applies inside the container: `npx` or `uvx`
-run as the agent's user with no install at all. Anything needed on every start belongs in an
-image built `FROM` this one.
-
-## Keeping the store current after an image bump
-
-A newer image means a newer ctxr, and nothing else moves the store along with it: the release
-advisory stays silent, because installed now equals published. If the release raised the store's
+The daily update installs a newer ctxr, and nothing else moves the store along with it: the
+release advisory stays silent, because installed now equals published. If the release raised the store's
 schema version, every ctxr command refuses the store until it is migrated, and the agent cannot
 run the skill that would fix it. Hermes has the same problem with its own `config.yaml`, and
 migrates it at every boot.
 
-`ctxr-update-store` does the store's equivalent, once per container start. It is **on by
-default**; set `CTXR_UPDATE_STORE_ENABLED=0` on a service to turn it off there. Every container in
-a stack runs this image, so the script decides for itself which one does the work. A container
-whose store is read-only, such as a browsing server, or that has no `gh` credential steps aside.
+`ctxr-update-store` does the store's equivalent, at every container start and after each ctxr
+update. It is **on by
+default**; set `CTXR_UPDATE_STORE_ENABLED=0` on a service to turn it off there. `serve` turns it off; in
+the agents container, a store that is read-only or a container with no `gh` credential steps
+aside.
 Of the rest, a lock on the store's git directory lets exactly one proceed, and the others find it
 held and leave it to that one. Then:
 
@@ -610,17 +502,17 @@ git shows. `CTXR_UPDATE_STORE_DRY_RUN=1` reports what it would commit, push and 
 doing any of it. It can also be run by hand as the runtime user:
 
 ```sh
-docker exec -u hermes -e HOME=/opt/data/home <container> ctxr-update-store
+docker exec -u agent <container> ctxr-update-store
 ```
 
 ### The Circleback runner
 
 A store that declares a `circleback` block in `contexture.yaml` gets ctxr's `ctxr-capture-circleback` skill, capture's retrieval step for Circleback. Its runner works
 out which Circleback meetings the store owes and renders their captures for a review. To let a Hermes cron job use
-it, the same `store-update` service runs `ctxr-install-circleback-script` after the store update, whether or not
+it, Hermes' recipe runs `ctxr-install-circleback-script` after the store update (its `store-updated` hook), whether or not
 `CTXR_UPDATE_STORE_ENABLED` is on:
 
-- It copies the skill's directory to `$HERMES_HOME/scripts/ctxr-capture-circleback/`.
+- It copies the skill's directory to `~/.hermes/scripts/ctxr-capture-circleback/`.
 - It writes `run.sh` beside it. The launcher sets the agent's `HOME`, changes into the store, and runs the copied
   `sweep.mjs` by absolute path.
 - A store that stops shipping the skill loses the copy.
@@ -633,77 +525,52 @@ hermes cron create --name "Weekly Circleback capture" --workdir /store \
   "Follow the ctxr-capture-circleback skill from step 2, using the runner report above."
 ```
 
-`cb` must be signed in under the agent's home (`docker exec -it -u hermes -e HOME=/opt/data/home <container> cb auth
-login --api-key`). Like the store update, the install never fails the boot.
+`cb` must be signed in under the agent's home (`docker exec -it -u agent <container> cb auth login
+--api-key`). Like the store update, the install never fails the boot.
 
 ## Layout
 
 ```
-CTXR_VERSION                          the pin, single source of truth
-lib/install-contexture-toolchain.sh   gh + ctxr: what CONTEXTURE needs
-lib/install-agent-clis.sh             codex, agent-browser, claude, agy: what an AGENT needs
-lib/install-backup-tools.sh           restic + rclone: what a BACKUP needs
-lib/provision-store.sh                shipped as `ctxr-provision`: one-shot store setup
-lib/config-push.sh                    shipped as `harness-config-push`: config to a git remote
-lib/schedule.sh                       shipped as `harness-schedule`: run a command on an interval
-lib/update-store.sh                   shipped as `ctxr-update-store`: re-render/migrate the store as a PR
-lib/install-circleback-script.sh      shipped as `ctxr-install-circleback-script`: the Circleback runner into Hermes
-lib/harness-remote.py                 shipped as `harness-remote`: optional remote agents under s6
-lib/tests/                            marker-extracted guard tests; CI runs them before the build
-harnesses/hermes/Dockerfile
-harnesses/hermes/compose.yaml         the shared deployment stores include remotely
-harnesses/hermes/harness-backup.sh    shipped as `harness-backup`: whole home to restic
-harnesses/hermes/hermes-config.gitignore   the allowlist seed the config repo is rendered from
-harnesses/hermes/s6-rc.d/webui/       WebUI as an opt-in supervised s6 service
-harnesses/hermes/s6-rc.d/store-update/  runs ctxr-update-store (on unless =0), then the Circleback install, once per start
-harnesses/hermes/s6-rc.d/*-remote/     Claude Code, Codex and agy remote control, off unless selected
+RUNTIME_VERSION                     the image's version, and its tag
+runtime/Dockerfile                  contexture-runtime: the platform, with no harness and no ctxr
+runtime/compose.yaml                the shared deployment every store includes
+runtime/entrypoint.sh               PUID/PGID remap as root, then everything as `agent`
+runtime/supervisord.conf            the supervisor; its programs are rendered at each boot
+runtime/config-push.sh              shipped as `home-config-push`: lib/config-push.sh, allowlist from recipes
+runtime/store-update.sh             shipped as `runtime-store-update`: store update, then the recipes' hooks
+runtime/provision.sh                shipped as `runtime-provision`: ctxr into the home, then ctxr-provision
+lib/runtime-install.py              shipped as `runtime-install`: installs and updates harnesses and tools, renders programs
+lib/recipes/<name>/                 one recipe per harness or tool: recipe.toml, install, update, hooks
+lib/home-backup.py                  shipped as `home-backup`: the home to restic, via recipe snapshots; restore
+lib/config-push.sh                  the config push itself: allowlist render, commit guard, visibility gate
+lib/home-migrate.py                 shipped as `home-migrate`: a Hermes-image volume into a runtime home, and back
+lib/schedule.sh                     shipped as `runtime-schedule`: run a command on an interval
+lib/update-store.sh                 shipped as `ctxr-update-store`: re-render/migrate the store as a PR
+lib/provision-store.sh              shipped as `ctxr-provision`: one-shot store setup
+lib/install-circleback-script.sh    shipped as `ctxr-install-circleback-script`: the Circleback runner into Hermes
+lib/harness-remote.py               shipped as `harness-remote`: claude, codex and agy remote control
+lib/install-*.sh                    gh, Node, the backup tools and the skill tools, at build time
+lib/tests/                          the tests CI runs
+docs/design/harnesses-in-home.md    why the image holds no harness, and what that gave up
 ```
 
-The runtime image (see [docs/design/harnesses-in-home.md](docs/design/harnesses-in-home.md)):
-
-```
-runtime/Dockerfile                    contexture-runtime: the platform with no harness in it
-runtime/compose.yaml                  the shared deployment every store includes
-runtime/entrypoint.sh                 PUID/PGID remap as root, then everything as `agent`
-runtime/supervisord.conf              the supervisor; its programs are rendered at each boot
-lib/runtime-install.py                shipped as `runtime-install`: installs and updates harnesses and tools, renders programs
-lib/recipes/<name>/                   one recipe per harness or tool: recipe.toml, install, update, hooks
-lib/install-node.sh                   Node 24 from nodejs.org, hashes pinned here
-lib/home-backup.py                    shipped as `home-backup`: the home to restic, via recipe snapshots; restore
-runtime/config-push.sh                shipped as `home-config-push`: lib/config-push.sh, allowlist from recipes
-lib/home-migrate.py                   shipped as `home-migrate`: a Hermes-image volume into a runtime home, and back
-runtime/store-update.sh               shipped as `runtime-store-update`: store update, then the recipes' hooks
-```
-
-The `harness-*` names these replaced stay in the image as links.
-
-Adding a harness is adding a directory under `harnesses/` and a line in the two workflow
-matrices. There is no shared *base image*, and that is not an oversight: each harness brings its
-own base, so the only reusable piece is the small harness-agnostic layer that installs `gh` and
-`ctxr`. Expect that to stay small — most of what a harness image contains is that harness's own
-integration work.
-
-Most harnesses need no image at all. A Contexture store is operable from Claude Code, Codex,
-Cursor, Cline or Gemini CLI through the same files, with no container involved. Only a harness
-you run as a long-lived service needs one.
+The `harness-*` command names these replaced stay in the image as links.
 
 ## Building locally
 
 Build context is the repo root, so `lib/` is reachable:
 
 ```sh
-docker build -f harnesses/hermes/Dockerfile \
-  --build-arg CTXR_VERSION="$(cat CTXR_VERSION)" \
-  -t contexture-hermes:test .
-
-docker run --rm contexture-hermes:test ctxr --version   # must match CTXR_VERSION
-docker run --rm contexture-hermes:test gh --version
+docker build -f runtime/Dockerfile -t contexture-runtime:test .
+python3 lib/tests/runtime-container-test.py contexture-runtime:test   # no network: supervision with fake harnesses
+sh lib/tests/runtime-installers-test.sh contexture-runtime:test        # every real installer, from its publisher
+python3 lib/tests/runtime-hermes-test.py contexture-runtime:test       # Hermes from upstream, about 30 minutes
 ```
 
-`CTXR_VERSION` has no default in the Dockerfile: a build that forgets it fails immediately
-rather than quietly producing an image pinned to something stale.
+The fast tests need no image: `python3 -B lib/tests/runtime-install-test.py`,
+`python3 -B lib/tests/compose-test.py`, `sudo sh lib/tests/harness-config-test.sh`, and the other
+`lib/tests/*-test.sh`.
 
 ## Licensing
 
-MIT. The images are derived works of two MIT-licensed upstreams — see [NOTICE](NOTICE) for
-attribution and the verification commands.
+MIT. The image redistributes no harness; see [NOTICE](NOTICE) for what it does contain.

@@ -8,8 +8,8 @@
 # ones that remain, a lock on the store's git directory lets exactly one do the work, and the
 # others step aside. Safe to run by hand, too, as the runtime user.
 #
-# WHY IT EXISTS. A store here gets a newer ctxr by image pull (the Hermes image) or by the runtime
-# image's daily update into the home, not by anyone running the upgrade skill, so nothing re-renders its contexture-owned files afterwards -- the release advisory is
+# WHY IT EXISTS. A store here gets a newer ctxr by the runtime image's daily update into the home,
+# not by anyone running the upgrade skill, so nothing re-renders its contexture-owned files afterwards -- the release advisory is
 # silent because installed equals published. Worse, a release that raises the store schema
 # version makes every ctxr command refuse the store, and the agent cannot run the skill that
 # would fix it. Hermes has the same problem with its own config.yaml and migrates it at boot.

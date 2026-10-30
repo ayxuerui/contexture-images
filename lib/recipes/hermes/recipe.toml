@@ -36,8 +36,8 @@ snapshot = "snapshot"
 restore = "restore"
 exclude = [".hermes/**/*.db", ".hermes/**/*.db-wal", ".hermes/**/*.db-shm", ".hermes/**/*.db-journal"]
 
-# What the config repository tracks of ~/.hermes: harnesses/hermes/hermes-config.gitignore's rules,
-# rooted at .hermes/ instead of the repository root.
+# What the config repository tracks of ~/.hermes: the retired Hermes image's allowlist (kept as
+# lib/tests/fixtures/allowlist.gitignore), rooted at .hermes/ instead of the repository root.
 [config]
 root = ".hermes"
 bundled_skills = ".local/share/hermes-agent/skills"
