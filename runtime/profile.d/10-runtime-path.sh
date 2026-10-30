@@ -1,5 +1,4 @@
-# Debian's /etc/profile overwrites PATH for login shells, dropping the image's ENV PATH -- the
-# same trap harnesses/hermes/profile.d/10-hermes-path.sh documents for the Hermes image. Restore
+# Debian's /etc/profile overwrites PATH for login shells, dropping the image's ENV PATH. Restore
 # it, in the image's order: the platform first, then ~/.local/bin, where every harness's installer
 # and npm's global prefix put their binaries.
 #
