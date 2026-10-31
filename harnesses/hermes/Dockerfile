@@ -61,7 +61,7 @@ ARG CODEX_VERSION=0.162.1
 ARG AGENT_BROWSER_VERSION=0.39.0
 # Circleback's CLI (`cb`), so a store agent can read meetings without a connector. Inert until
 # logged in; see the README.
-ARG CIRCLEBACK_CLI_VERSION=1.1.0
+ARG CIRCLEBACK_CLI_VERSION=1.2.0
 # Both watched by watch-agent-clis.yml, like the two above. CLAUDE_VERSION is an exact pin;
 # AGY_VERSION is a cache key and an expectation, since agy's installer cannot be pinned. See
 # install-agent-clis.sh.
