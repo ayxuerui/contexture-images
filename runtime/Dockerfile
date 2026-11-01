@@ -62,11 +62,11 @@ ARG NODE_SHA256_ARM64=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13f
 COPY lib/install-node.sh /tmp/install-node.sh
 RUN /tmp/install-node.sh && rm -f /tmp/install-node.sh
 
-# --- Contexture toolchain: gh only -----------------------------------------------------------
-# The same script the Hermes image runs, told to skip ctxr: ctxr is a tool installed into the home.
+# --- gh ------------------------------------------------------------------------------------------
+# No ctxr: it is a tool installed into the home.
 ARG GH_VERSION=2.98.0
-COPY lib/install-contexture-toolchain.sh /tmp/install-contexture-toolchain.sh
-RUN CTXR_VERSION=none /tmp/install-contexture-toolchain.sh && rm -f /tmp/install-contexture-toolchain.sh
+COPY lib/install-gh.sh /tmp/install-gh.sh
+RUN /tmp/install-gh.sh && rm -f /tmp/install-gh.sh
 
 # --- Backup and skill tools ------------------------------------------------------------------
 ARG RESTIC_VERSION=0.19.1
@@ -82,9 +82,8 @@ COPY lib/install-skill-tools.sh /tmp/install-skill-tools.sh
 RUN /tmp/install-skill-tools.sh && rm -f /tmp/install-skill-tools.sh
 
 # --- Platform venv ---------------------------------------------------------------------------
-# The document-skill libraries the Hermes image installs into Hermes' own venv, here in a venv the
-# platform owns, so no harness's update can remove them. First on PATH, so `python3` in an agent's
-# shell has them. Same pins as harnesses/hermes/Dockerfile.
+# The document-skill libraries, in a venv the platform owns, so no harness's update can remove
+# them. First on PATH, so `python3` in an agent's shell has them.
 ARG PYPDF_VERSION=6.16.2
 ARG REPORTLAB_VERSION=5.0.1
 ARG PDFPLUMBER_VERSION=0.11.10
@@ -113,10 +112,12 @@ RUN set -eux; \
 #   home-backup              the whole home to restic, through the recipes' snapshots; and restore
 #   home-config-push         the home's config to a private git remote, allowlist from the recipes
 #   home-migrate             turns a Hermes-image volume into a runtime home, and back
-#   harness-remote           the remote-control wrapper, shared with the Hermes image
+#   harness-remote           the remote-control wrapper for claude, codex and agy
 #   runtime-store-update     the store update at start, then the recipes' store-updated hooks
 #   runtime-provision        workspace-init: ctxr into the home, then ctxr-provision
-#   ctxr-update-store, ctxr-provision, ctxr-install-circleback-script   as in the Hermes image
+#   ctxr-update-store        the store update at start, through a reviewed pull request
+#   ctxr-provision           workspace-init's store setup
+#   ctxr-install-circleback-script   the store's Circleback runner into Hermes' scripts
 # The names these replaced (harness-install, harness-schedule, harness-backup, harness-config-push,
 # harness-migrate-home) stay as links, for a compose file or an operator's habit still using them.
 COPY lib/runtime-install.py /usr/local/bin/runtime-install

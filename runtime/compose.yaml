@@ -1,9 +1,6 @@
 # Shared deployment for a Contexture store on the contexture-runtime image.
 #
-# The successor to harnesses/hermes/compose.yaml (docs/design/harnesses-in-home.md). A store moves
-# by changing its include from that file to this one -- after home-migrate has turned its
-# volume into a home -- so stores migrate one at a time, and the old file stays as it is for the
-# ones that have not:
+# Every store includes it from main (docs/design/harnesses-in-home.md):
 #
 #   name: my-store
 #   include:
@@ -12,7 +9,7 @@
 # No pin on the store side: the image is named by its own version, asserted equal to RUNTIME_VERSION
 # by CI; every service pulls on every `up`; nothing here is deployment-specific. The image carries
 # no ctxr: it is installed into a home on first boot and updated daily, like every tool. What
-# changes for a store:
+# changed for a store coming from the retired contexture-hermes stack:
 #
 #   - the volume key `data` (HERMES_HOME at /opt/data) is now `home` (the agent's home at
 #     /home/agent). A store that maps its volume by name renames the key and keeps the name; a

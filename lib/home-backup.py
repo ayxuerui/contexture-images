@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Snapshot the agent's whole home to restic, or restore it. The runtime image's home-backup.
 
-Shipped as `home-backup` (formerly `harness-backup`) in contexture-runtime; the Hermes image keeps
-harnesses/hermes/harness-backup.sh. This is the recovery copy -- credentials included, encrypted
-at rest -- and home-config-push is the other half, a history to diff with no secrets in it.
+Shipped as `home-backup` (formerly `harness-backup`) in contexture-runtime. This is the recovery
+copy -- credentials included, encrypted at rest -- and home-config-push is the other half, a history
+to diff with no secrets in it.
 
     home-backup                     snapshot the home
     home-backup restore [SNAPSHOT]  restore it (default: the latest), with the agents stopped

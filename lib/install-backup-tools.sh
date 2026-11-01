@@ -30,16 +30,16 @@
 # install.sh | sudo bash` takes exactly one optional argument, `beta` -- it reads
 # downloads.rclone.org/version.txt and always installs CURRENT, so the image's rclone would
 # move on every rebuild with no record of what changed. restic publishes no install script at
-# all; its `self-update` is a post-install updater that also goes to latest. install-agent-clis
-# already carries two unpinned curl|bash installers and apologises for them in a comment,
-# because claude and agy ship no versioned artifact. rclone and restic do, so taking the
-# unpinned path here would trade away the version assertion for nothing -- and for a BACKUP
+# all; its `self-update` is a post-install updater that also goes to latest. The harnesses are
+# installed by their publishers' installers into the home because they update themselves daily;
+# rclone and restic are platform tools that ship versioned artifacts, so taking the unpinned path
+# here would trade away the version assertion for nothing -- and for a BACKUP
 # tool, knowing which version wrote the repository is the whole point.
 #
 # Extraction is done with python's stdlib rather than bzip2/unzip/dpkg. Neither bzip2 nor unzip
 # is on these bases (checked), so the alternative was apt-get install + purge around a single
 # decompression. Using python also leaves this script with no Debian dependency at all, which is
-# more than install-contexture-toolchain.sh can say.
+# more than install-gh.sh can say.
 #
 # Inputs, all required, fed from Dockerfile ARGs:
 #   RESTIC_VERSION   restic release tag, without the leading v

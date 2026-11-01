@@ -1,42 +1,30 @@
-# Build and push every image to GHCR.
+# Build and push contexture-runtime to GHCR.
 #
-# contexture-runtime carries no ctxr (stores install it into their homes), so its tag is its own
-# version, the RUNTIME_VERSION file. For contexture-hermes the image tag IS the ctxr version it
-# contains, and the Dockerfile asserts that equality at
-# build time (lib/install-contexture-toolchain.sh). That is deliberate: a ctxr pin drifting
-# from the store's schema_version is the failure that has broken these deployments repeatedly,
-# and since ctxr 0.10.0 the schema gate is both-directional with no `ctxr migrate` to bridge it.
-# Making the version legible in the tag is the whole point of publishing these.
+# The image carries no harness and no ctxr -- stores install them into their homes -- so it has a
+# version of its own, the RUNTIME_VERSION file, and the tag is that version. The shared compose
+# file names the same version, and CI asserts the two agree.
 name: Release
 
-# Publishing is driven by CTXR_VERSION, not by a tag.
+# Publishing is driven by a push to main, not by a tag.
 #
-# Merging a bump PR is a USER push, which triggers workflows normally -- so the merge is
-# what publishes, with no manual tagging step. The tag is created afterwards, as a record
-# of what shipped, rather than being the thing that causes it.
+# Merging is a USER push, which triggers workflows normally -- so the merge is what publishes, with
+# no manual tagging step. The tag is created afterwards, as a record of what shipped, rather than
+# being the thing that causes it.
 #
-# It has to work this way round. A tag pushed by a workflow using GITHUB_TOKEN does NOT
-# trigger other workflows (GitHub blocks that to prevent recursion; workflow_dispatch and
-# repository_dispatch are the only exceptions), so "workflow creates tag -> release fires
-# on the tag" would silently do nothing at all.
+# It has to work this way round. A tag pushed by a workflow using GITHUB_TOKEN does NOT trigger
+# other workflows (GitHub blocks that to prevent recursion; workflow_dispatch and
+# repository_dispatch are the only exceptions), so "workflow creates tag -> release fires on the
+# tag" would silently do nothing at all.
 on:
   push:
     branches: [main]
-    # Anything that changes what lands IN the image, not just the ctxr pin. Keying this on
-    # CTXR_VERSION alone was wrong: a new tool, a newer base image or a WebUI bump changes the
-    # artifact without touching that file, so the change would sit on main and never publish.
+    # Anything that changes what lands IN the image, not just its version: a newer base, a recipe
+    # or a script change republishes the same tag, which stores pull on their next `up`.
     paths:
-      - 'CTXR_VERSION'
       - 'RUNTIME_VERSION'
-      - 'harnesses/**'
       - 'runtime/**'
       - 'lib/**'
   workflow_dispatch:
-    inputs:
-      ctxr_version:
-        description: 'ctxr-cli version to build (defaults to the CTXR_VERSION file)'
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -47,7 +35,7 @@ concurrency:
 
 jobs:
   publish:
-    name: publish (${{ matrix.harness }})
+    name: publish (runtime)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -55,58 +43,16 @@ jobs:
       packages: write
       attestations: write
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        # contexture-runtime is what stores run (docs/design/harnesses-in-home.md), tagged by
-        # RUNTIME_VERSION; contexture-hermes, its predecessor, is tagged by the ctxr version.
-        include:
-          - harness: hermes
-            dockerfile: harnesses/hermes/Dockerfile
-            description: Hermes agent runtime with the Contexture toolchain
-            version_file: CTXR_VERSION
-          - harness: runtime
-            dockerfile: runtime/Dockerfile
-            description: The Contexture platform; every harness and tool installs into the home
-            version_file: RUNTIME_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Resolve CTXR_VERSION
-        id: ctxr
-        env:
-          OVERRIDE: ${{ inputs.ctxr_version }}
-        run: |
-          set -euo pipefail
-          if [ -n "${OVERRIDE:-}" ]; then
-            version="${OVERRIDE}"
-          else
-            version="$(tr -d '[:space:]' < CTXR_VERSION)"
-          fi
-          if [ -z "${version}" ]; then
-            echo "::error::could not resolve a CTXR_VERSION to build" >&2
-            exit 1
-          fi
-          # Refuse to publish a tag for a version that is not on the registry: the image would
-          # claim a ctxr that nobody can `npm install`.
-          npm view "ctxr-cli@${version}" version >/dev/null
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      # The tag: the ctxr version for contexture-hermes, RUNTIME_VERSION for contexture-runtime.
-      - name: Resolve the image version
+      - name: Resolve RUNTIME_VERSION
         id: image
-        env:
-          VERSION_FILE: ${{ matrix.version_file }}
-          CTXR: ${{ steps.ctxr.outputs.version }}
         run: |
           set -euo pipefail
-          if [ "${VERSION_FILE}" = CTXR_VERSION ]; then
-            version="${CTXR}"
-          else
-            version="$(tr -d '[:space:]' < "${VERSION_FILE}")"
-          fi
-          [ -n "${version}" ] || { echo "::error::${VERSION_FILE} is empty" >&2; exit 1; }
+          version="$(tr -d '[:space:]' < RUNTIME_VERSION)"
+          [ -n "${version}" ] || { echo "::error::RUNTIME_VERSION is empty" >&2; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
@@ -126,14 +72,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/${{ github.repository_owner }}/contexture-${{ matrix.harness }}
+          images: ghcr.io/${{ github.repository_owner }}/contexture-runtime
           tags: |
             type=raw,value=${{ steps.image.outputs.version }}
             type=raw,value=${{ steps.image.outputs.version }}-${{ github.sha }}
             type=raw,value=latest
           labels: |
-            org.opencontainers.image.title=contexture-${{ matrix.harness }}
-            org.opencontainers.image.description=${{ matrix.description }} (${{ matrix.harness }} ${{ steps.image.outputs.version }})
+            org.opencontainers.image.title=contexture-runtime
+            org.opencontainers.image.description=The Contexture platform; every harness and tool installs into the home (runtime ${{ steps.image.outputs.version }})
             org.opencontainers.image.licenses=MIT
 
       # arm64 matters here: the deployments consuming this run on aarch64. amd64 is carried so
@@ -143,24 +89,18 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: runtime/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: mode=max
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            CTXR_VERSION=${{ steps.ctxr.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # A separate job, not a step in `publish`, for two reasons: it must run exactly ONCE no
-  # matter how many harnesses the matrix grows to (a per-leg step would race to push the
-  # same tag), and it must only run once every leg has succeeded.
-  #
-  # Not a trigger -- see the note on `on:` above. This records what shipped; it never gates
-  # a publish.
+  # A separate job, so the tag is written only once the image published. Not a trigger -- see the
+  # note on `on:` above. This records what shipped; it never gates a publish.
   tag:
     name: tag the published version
     needs: publish
@@ -176,17 +116,13 @@ jobs:
       - name: Tag
         run: |
           set -euo pipefail
+          tag="runtime-v$(tr -d '[:space:]' < RUNTIME_VERSION)"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "tag ${tag} already exists - leaving it alone"
+            exit 0
+          fi
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          # v<ctxr> for contexture-hermes, runtime-v<RUNTIME_VERSION> for contexture-runtime.
-          for pair in "v$(tr -d '[:space:]' < CTXR_VERSION) contexture-hermes" \
-                      "runtime-v$(tr -d '[:space:]' < RUNTIME_VERSION) contexture-runtime"; do
-            tag="${pair%% *}"; image="${pair#* }"
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-              echo "tag ${tag} already exists - leaving it alone"
-              continue
-            fi
-            git tag -a "${tag}" -m "${image} ${tag}"
-            git push origin "${tag}"
-            echo "tagged ${tag}"
-          done
+          git tag -a "${tag}" -m "contexture-runtime ${tag}"
+          git push origin "${tag}"
+          echo "tagged ${tag}"

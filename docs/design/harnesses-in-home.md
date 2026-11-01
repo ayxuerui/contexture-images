@@ -4,7 +4,9 @@ Status: proposed 2026-10-23; phases 1-3 built and every store migrated by 2026-1
 2026-10-26** (below): the `harnesses` volume, versioned installs and pins are gone, and every
 harness and tool is installed into the home by its publisher's own installer. Where the sections
 after the revision describe `/opt/harnesses`, `HARNESS_PINS`, `current` links or `harness-install`,
-the revision supersedes them; they are kept as the record of what was built first.
+the revision supersedes them; they are kept as the record of what was built first. The
+`contexture-hermes` image and `harnesses/hermes/` were removed on 2026-10-30, once family-brain,
+the last stack on them, had moved.
 
 ## Revision 2026-10-26: official installers, into the home
 

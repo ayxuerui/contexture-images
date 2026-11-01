@@ -1,5 +1,5 @@
-# Build every harness image without pushing, so the smoke tests baked into each Dockerfile
-# (gh --version, `ctxr --version` equals CTXR_VERSION, the WebUI compileall) gate every PR.
+# Build the runtime image without pushing and test it: its recipes against fake harnesses, the
+# real installers, and Hermes from upstream. The fast jobs need no image and report first.
 name: CI
 
 on:
@@ -64,7 +64,7 @@ jobs:
         run: sh lib/tests/install-circleback-script-test.sh
 
   # The shared compose file stores include remotely. Needs only the runner's Docker Compose:
-  # version parity with CTXR_VERSION, portability, and a store's include + override merge.
+  # version parity with RUNTIME_VERSION, portability, and a store's include + override merge.
   compose:
     name: shared compose
     runs-on: ubuntu-latest
@@ -142,48 +142,3 @@ jobs:
       # would track.
       - name: Test Hermes on the runtime image
         run: python3 lib/tests/runtime-hermes-test.py contexture-runtime:ci
-
-  build:
-    name: build (${{ matrix.harness }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        # One entry today. Adding a harness is adding a directory plus a line here; nothing
-        # else in this workflow changes.
-        harness: [hermes]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Resolve CTXR_VERSION
-        id: ctxr
-        run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < CTXR_VERSION)"
-          [ -n "${version}" ] || { echo "::error::CTXR_VERSION is empty"; exit 1; }
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      # amd64 only on PRs. The arm64 leg needs QEMU emulation and roughly triples the build,
-      # for a Dockerfile whose failure modes (a moved .deb, a version mismatch, a Python
-      # syntax break) are not architecture-specific. release.yml still publishes both.
-      - name: Build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: harnesses/${{ matrix.harness }}/Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: contexture-hermes:ci
-          build-args: |
-            CTXR_VERSION=${{ steps.ctxr.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Test remote services under s6-overlay
-        run: python3 lib/tests/harness-remote-container-test.py contexture-hermes:ci

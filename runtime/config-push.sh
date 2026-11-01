@@ -1,8 +1,8 @@
 #!/bin/sh
-# The runtime image's home-config-push (formerly harness-config-push): the shared lib/config-push.sh, pointed at the home.
+# The runtime image's home-config-push (formerly harness-config-push): lib/config-push.sh, pointed
+# at the home.
 #
-# In the Hermes image the config repository is HERMES_HOME and its allowlist is the fixed
-# hermes-config.gitignore. Here the repository is the agent's home -- every harness's state is
+# The repository is the agent's home -- every harness's state is
 # under it -- and the allowlist is rendered from the recipes in HARNESSES and TOOLS
 # (`runtime-install allowlist`), so a recipe's state is tracked when, and only when, it
 # says what of it to keep. Everything config-push.sh guards -- a public remote, a staged
