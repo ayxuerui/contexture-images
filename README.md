@@ -52,6 +52,8 @@ on merge:
 | `TOOLS` | `ctxr,cb,agent-browser` | What the agents use |
 | `HARNESS_SERVICES` | `hermes-gateway,hermes-dashboard,hermes-webui` | Programs to run; add `claude-remote`, `codex-remote`, `agy-remote` for remote control |
 | `RUNTIME_UPDATE_INTERVAL` | `86400` | The update of what does not update itself; `0` turns it off |
+| `HARNESS_NOTIFY_TARGET` | blank | Where failures go, through `hermes send` (e.g. `telegram`): a failed backup, config push or daily update, or an update held for lack of disk. Blank sends nothing |
+| `RUNTIME_MIN_FREE_MB` | `2048` | Below this much free disk the healthcheck fails and the daily update is held. The same floor home-backup needs for staging |
 | `HOME_BACKUP_*`, `HOME_CONFIG_*` | see the file | Backups and the config repository. The `HARNESS_BACKUP_*` and `HARNESS_CONFIG_*` names they replace are still read |
 
 `runtime-install` (`lib/runtime-install.py`) installs what is missing at boot, runs the daily

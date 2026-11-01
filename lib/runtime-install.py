@@ -43,6 +43,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import string
 import subprocess
 import sys
@@ -94,6 +95,19 @@ def status_file():
 
 def lock_file():
     return state_dir() / 'runtime-install.lock'
+
+
+def free_space():
+    """(free MB, minimum MB, path) on the filesystem holding the agent's home.
+
+    Measured where the status file lives, not at HOME: the healthcheck runs as root with HOME=/root,
+    which may be another filesystem. RUNTIME_MIN_FREE_MB (default 2048) is home-backup's own staging
+    minimum: below it backups already refuse to run, and installs start failing soon after."""
+    path = status_file().parent
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    minimum = int(os.environ.get('RUNTIME_MIN_FREE_MB') or '2048')
+    return shutil.disk_usage(path).free // (1024 * 1024), minimum, path
 
 
 def names(variable):
@@ -268,7 +282,10 @@ PLATFORM_PROGRAMS = {
     'runtime-update': {'command': ['runtime-schedule', 'runtime-install', '--update'], 'oneshot': False,
                        'environment': {'HARNESS_SCHEDULE_INTERVAL': '${RUNTIME_UPDATE_INTERVAL}',
                                        'HARNESS_SCHEDULE_NAME': 'runtime-update',
-                                       'HARNESS_SCHEDULE_SKIP_FIRST': '1'},
+                                       'HARNESS_SCHEDULE_SKIP_FIRST': '1',
+                                       # Where a failed update is reported (`hermes send`), as for
+                                       # the backup schedulers; blank sends nothing.
+                                       'HARNESS_SCHEDULE_NOTIFY': '${HARNESS_NOTIFY_TARGET:-}'},
                        'enabled': lambda: update_interval() not in ('', '0')},
 }
 
@@ -397,12 +414,20 @@ def converge(update_all, only=(), programs=True):
         before = previous_versions()
         report = {'installed': {}}
         moved = []
+        free, minimum, where = free_space()
+        # An update on a full disk fails halfway and can leave a harness worse off than not updating
+        # at all; skip them and say so -- the exit code makes the scheduler send the failure out.
+        hold = update_all and free < minimum
+        if hold:
+            log(f'not updating: only {free} MB free on {where}, below {minimum} MB (RUNTIME_MIN_FREE_MB)')
+        report['disk'] = {'free_mb': free, 'minimum_mb': minimum}
         for name in selected:
             recipe = recipes[name]
             try:
                 if not installed(recipe):
                     install(recipe)
-                elif update_all and (not only or name in only) and not recipe.self_updating:
+                elif (update_all and not hold and (not only or name in only)
+                      and not recipe.self_updating):
                     update(recipe)
                 version = version_of(recipe)
                 if not installed(recipe):
@@ -454,6 +479,10 @@ def status():
     except (OSError, ValueError):
         print('no status yet: runtime-install has not run')
         return 1
+    free, minimum, where = free_space()
+    if free < minimum:
+        print(f'disk: only {free} MB free on {where}, below {minimum} MB')
+        healthy = False
     for name, entry in sorted(report.get('installed', {}).items()):
         state = entry.get('state')
         print(f'{name}: {state} {entry.get("version") or ""}'.rstrip()
@@ -678,8 +707,14 @@ def main(argv):
         report = converge(update_all=False, programs=False)
         return 0 if all(e['state'] == 'ok' for e in report['installed'].values()) else 1
     if argv[:1] == ['--update']:
-        converge(update_all=True, only=tuple(argv[1:]))
-        return 0
+        # Non-zero when anything failed or the disk is too full to update: runtime-schedule then
+        # sends the failure to HARNESS_NOTIFY_TARGET, rather than it sitting in the status file.
+        report = converge(update_all=True, only=tuple(argv[1:]))
+        failed = sorted(n for n, e in report['installed'].items() if e['state'] != 'ok')
+        if failed:
+            log('FAILED: ' + ', '.join(f"{n} ({report['installed'][n].get('error', '')[:120]})" for n in failed))
+        low = report['disk']['free_mb'] < report['disk']['minimum_mb']
+        return 1 if failed or low else 0
     print('usage: runtime-install [--boot | --update [NAME...] | --install-only | status | check | wait | hook NAME | describe | allowlist PATH]',
           file=sys.stderr)
     return 2
