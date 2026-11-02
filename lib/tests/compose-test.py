@@ -61,7 +61,7 @@ class Runtime(unittest.TestCase):
         env = agents['environment']
         self.assertEqual(env['HARNESSES'], 'hermes,hermes-webui,claude,codex,agy')
         self.assertEqual(env['TOOLS'], 'ctxr,cb,agent-browser')
-        self.assertEqual(env['HARNESS_SERVICES'], 'hermes-gateway,hermes-dashboard,hermes-webui')
+        self.assertEqual(env['HARNESS_SERVICES'], 'hermes-gateway,hermes-dashboard,hermes-webui,ctxr-sync')
         self.assertEqual(env['RUNTIME_UPDATE_INTERVAL'], '86400')
         for retired in ('HERMES_DASHBOARD', 'HERMES_WEBUI_ENABLED', 'HARNESS_REMOTE_AGENTS', 'HERMES_HOME',
                         'HARNESS_PINS', 'HARNESS_UPDATE_INTERVAL'):
@@ -107,8 +107,15 @@ class Runtime(unittest.TestCase):
         self.assertEqual((env['HARNESSES'], env['TOOLS'], env['HARNESS_SERVICES']), ('', 'ctxr', 'ctxr-serve'))
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
         agents = model['services']['agents']
-        self.assertFalse(any('GITHUB_APP' in key for key in agents['environment']))
+        self.assertFalse(any('GITHUB_APP' in key or 'WEBHOOK' in key for key in agents['environment']))
         self.assertNotIn('secrets', agents)
+
+    def test_the_webhook_secret_reaches_serve_only_when_given(self):
+        serve = self.render()['services']['serve']
+        self.assertNotIn('CONTEXTURE_WEBHOOK_SECRET_FILE', {k: v for k, v in serve['environment'].items() if v})
+        given = self.render(env={**REQUIRED, 'CONTEXTURE_WEBHOOK_SECRET_PATH': '/dev/null'})['services']['serve']
+        self.assertEqual(given['environment']['CONTEXTURE_WEBHOOK_SECRET_FILE'], '/run/secrets/webhook-secret')
+        self.assertIn('webhook-secret', {s['source'] for s in given['secrets']})
 
     def test_a_store_moves_by_renaming_the_volume_key(self):
         with tempfile.TemporaryDirectory() as temporary:

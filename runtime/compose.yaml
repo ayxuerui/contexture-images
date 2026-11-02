@@ -32,7 +32,8 @@ x-image: &image ghcr.io/ayxuerui/contexture-runtime:1.0.0
 x-runtime-selection: &runtime-selection
   HARNESSES: ${HARNESSES:-hermes,hermes-webui,claude,codex,agy}
   TOOLS: ${TOOLS:-ctxr,cb,agent-browser}
-  HARNESS_SERVICES: ${HARNESS_SERVICES:-hermes-gateway,hermes-dashboard,hermes-webui}
+  # ctxr-sync keeps the agents' clone and its mounts current; a store overriding this list should keep it.
+  HARNESS_SERVICES: ${HARNESS_SERVICES:-hermes-gateway,hermes-dashboard,hermes-webui,ctxr-sync}
 
 # The one-shots and schedulers override the entrypoint, so the runtime entrypoint never runs:
 # HOME is set explicitly rather than taken from the remapped passwd entry.
@@ -62,6 +63,9 @@ x-backup-env: &backup-env
 x-approval-env: &approval-env
   CONTEXTURE_GITHUB_APP_ID: ${CONTEXTURE_GITHUB_APP_ID:-}
   CONTEXTURE_GITHUB_APP_PRIVATE_KEY_FILE: ${CONTEXTURE_GITHUB_APP_ID:+/run/secrets/github-app-key}
+  # The secret GitHub signs webhook deliveries with (ctxr 0.36.0, POST /hooks/github). Absent, serve
+  # has no webhook route and keeps itself current on its timer alone.
+  CONTEXTURE_WEBHOOK_SECRET_FILE: ${CONTEXTURE_WEBHOOK_SECRET_PATH:+/run/secrets/webhook-secret}
 
 x-config-env: &config-env
   <<: *runtime-home
@@ -183,6 +187,7 @@ services:
       CTXR_UPDATE_STORE_ENABLED: "0"
     secrets:
       - github-app-key
+      - webhook-secret
     volumes:
       - serve-home:/home/agent
       - store:/store
@@ -290,6 +295,8 @@ services:
 secrets:
   github-app-key:
     file: ${CONTEXTURE_GITHUB_APP_PRIVATE_KEY_PATH:-/dev/null}
+  webhook-secret:
+    file: ${CONTEXTURE_WEBHOOK_SECRET_PATH:-/dev/null}
 
 volumes:
   # The agent's home: every harness and tool, their state, and every provider login. NEVER
