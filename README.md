@@ -68,6 +68,17 @@ its own `serve-home` volume at `/home/agent`. Its ctxr installs there on first b
 daily, like the agents', each container on its own timer. `workspace-init` installs ctxr into the
 agents' home (`runtime-provision`) before it provisions.
 
+**The agents keep their own clone current.** The default `HARNESS_SERVICES` includes `ctxr-sync`, which runs
+`ctxr sync --every ${CTXR_SYNC_MINUTES:-5}` (ctxr 0.36.0) as the agent, with the agent's own token: each round
+fast-forwards the store's clone and its mounts when they are clean and on the default branch, and leaves local work
+alone. A store that sets its own `HARNESS_SERVICES` should list `ctxr-sync`. `serve` updates the same clone from its
+own timer and, with a webhook, at once; it never runs this service.
+
+**A webhook secret, optional.** Set `CONTEXTURE_WEBHOOK_SECRET_PATH` to a file holding the secret GitHub signs
+deliveries with, and `serve` gets it as `/run/secrets/webhook-secret` and accepts signed deliveries at
+`POST /hooks/github`. The agents container never receives it. The store's hostname then needs a Cloudflare Access
+bypass for exactly `/hooks/github`.
+
 **When a ctxr release raises the store schema** (rare: it was 10 from 0.20.0 to 0.34.0), each
 container's ctxr refuses the store from its next daily update until the store migrates: `serve`
 goes unhealthy, and agents' ctxr commands fail. The agents container's update opens the migration

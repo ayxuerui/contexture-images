@@ -16,3 +16,11 @@ binaries = ["ctxr"]
 command = ["ctxr", "serve", "--host", "0.0.0.0", "--port", "${CTXR_SERVE_PORT:-18080}", "--root", "${CONTEXTURE_STORE_ROOT:-/store}"]
 directory = "${CONTEXTURE_STORE_ROOT:-/store}"
 probe = "http://127.0.0.1:${CTXR_SERVE_PORT:-18080}/"
+
+# Keeps the agents' own clone of the store, and its mounts, at the default branch: `ctxr sync --every`
+# (ctxr 0.36.0) fast-forwards only a clean clone on the default branch and leaves local work alone.
+# It runs as the agent, with the agent's token, in the agents container. `serve`'s own updates run
+# inside `ctxr serve`, which never runs git in a clone the agent controls on the agents' behalf.
+[services.ctxr-sync]
+command = ["ctxr", "sync", "--every", "${CTXR_SYNC_MINUTES:-5}", "--root", "${CONTEXTURE_STORE_ROOT:-/store}"]
+directory = "${CONTEXTURE_STORE_ROOT:-/store}"
