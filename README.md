@@ -84,7 +84,7 @@ cannot reach (a fine-grained token covers one owner), set `CONTEXTURE_OWNER_TOKE
 holding one file per owner, named exactly as the owner (`ReadyRun-AI`), each holding a fine-grained token with
 Contents and Pull requests read/write and Metadata read on the mounted repositories. The agents container gets
 it read-only as `/run/secrets/owner-tokens`, with `CONTEXTURE_GITHUB_OWNER_TOKENS_DIR` pointing there (ctxr
-0.37.0); `serve` never receives it. Make the directory 755 and its files 644 inside a host directory only you can
+0.38.0); `serve` never receives it. Make the directory 755 and its files 644 inside a host directory only you can
 read: the mount keeps host modes, and the agent runs as uid 10000. The directory is mounted live, so a replaced
 token is used from ctxr's next call, with no restart.
 

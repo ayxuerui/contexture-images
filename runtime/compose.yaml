@@ -145,7 +145,7 @@ services:
       HARNESS_REMOTE_CODEX_ARGS: ${HARNESS_REMOTE_CODEX_ARGS:-}
       HARNESS_REMOTE_AGY_ARGS: ${HARNESS_REMOTE_AGY_ARGS:-}
       # Fine-grained tokens for the GitHub owners of mounted stores that the agent's own token cannot
-      # reach, one file per owner (ctxr 0.37.0). Absent, ctxr uses the agent's own token for every owner.
+      # reach, one file per owner (ctxr 0.38.0). Absent, ctxr uses the agent's own token for every owner.
       CONTEXTURE_GITHUB_OWNER_TOKENS_DIR: ${CONTEXTURE_OWNER_TOKENS_PATH:+/run/secrets/owner-tokens}
     secrets:
       - owner-tokens
