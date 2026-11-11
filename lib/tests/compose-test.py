@@ -108,7 +108,8 @@ class Runtime(unittest.TestCase):
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key or 'WEBHOOK' in key for key in agents['environment']))
-        self.assertNotIn('secrets', agents)
+        self.assertEqual({s['source'] for s in agents.get('secrets', [])}, {'owner-tokens'},
+                         'the App key and the webhook secret never reach the agents')
 
     def test_the_webhook_secret_reaches_serve_only_when_given(self):
         serve = self.render()['services']['serve']
@@ -116,6 +117,17 @@ class Runtime(unittest.TestCase):
         given = self.render(env={**REQUIRED, 'CONTEXTURE_WEBHOOK_SECRET_PATH': '/dev/null'})['services']['serve']
         self.assertEqual(given['environment']['CONTEXTURE_WEBHOOK_SECRET_FILE'], '/run/secrets/webhook-secret')
         self.assertIn('webhook-secret', {s['source'] for s in given['secrets']})
+
+    def test_owner_tokens_reach_the_agents_only_when_given(self):
+        agents = self.render()['services']['agents']
+        self.assertNotIn('CONTEXTURE_GITHUB_OWNER_TOKENS_DIR', {k: v for k, v in agents['environment'].items() if v})
+        model = self.render(env={**REQUIRED, 'CONTEXTURE_OWNER_TOKENS_PATH': '/dev/null'})
+        agents = model['services']['agents']
+        self.assertEqual(agents['environment']['CONTEXTURE_GITHUB_OWNER_TOKENS_DIR'], '/run/secrets/owner-tokens')
+        self.assertIn('owner-tokens', {s['source'] for s in agents['secrets']})
+        serve = model['services']['serve']
+        self.assertNotIn('owner-tokens', {s['source'] for s in serve['secrets']}, 'serve lands as the App')
+        self.assertNotIn('CONTEXTURE_GITHUB_OWNER_TOKENS_DIR', serve['environment'])
 
     def test_a_store_moves_by_renaming_the_volume_key(self):
         with tempfile.TemporaryDirectory() as temporary:
