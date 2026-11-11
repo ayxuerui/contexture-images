@@ -68,6 +68,24 @@ its own `serve-home` volume at `/home/agent`. Its ctxr installs there on first b
 daily, like the agents', each container on its own timer. `workspace-init` installs ctxr into the
 agents' home (`runtime-provision`) before it provisions.
 
+**`serve` runs a second opinion over MCP.** It installs `claude`, `codex` and `agy` into its own home
+(`SERVE_HARNESSES`, default `claude,codex,agy`; set it to `""` to leave them out), with no program of
+their own. ctxr runs each one in a fresh folder that is its home and holds only a copy of its own login,
+and wraps it in Landlock rules through the image's `setpriv`, so the CLI can read only the system
+directories, its install directory and that folder: not the App key, not `/store`, not the rest of
+serve's home. ctxr refuses the second opinion where that confinement is unavailable. Sign each CLI in
+once, as the agent:
+
+```sh
+docker compose exec -u agent serve claude          # then /login, then /exit
+docker compose exec -u agent serve codex login
+docker compose exec -u agent serve agy             # one interactive run signs it in
+docker compose exec -u agent serve ctxr second-opinion preflight --require-confinement
+```
+
+The last line should report each CLI `OK` and `confined: yes`. `serve`'s memory limit is
+`SERVE_MEMORY_LIMIT`, default `1G`: a critique peaks at about 420 MB beside serve's own 100-160 MB.
+
 **The agents keep their own clone current.** The default `HARNESS_SERVICES` includes `ctxr-sync`, which runs
 `ctxr sync --every ${CTXR_SYNC_MINUTES:-5}` (ctxr 0.36.0) as the agent, with the agent's own token: each round
 fast-forwards the store's clone and its mounts when they are clean and on the default branch, and leaves local work
@@ -182,6 +200,8 @@ starts.
 | `HERMES_WEBUI_PASSWORD` | blank | Optional WebUI password |
 | `HARNESS_REMOTE_{CLAUDE,CODEX,AGY}_ARGS` | blank | JSON argument overrides; see below |
 | `AGENTS_MEMORY_LIMIT`, `AGENTS_CPUS` | `6G`, `3.0` | Budget for the `agents` container |
+| `SERVE_HARNESSES` | `claude,codex,agy` | The model CLIs `serve` installs for a second opinion; empty leaves them out |
+| `SERVE_MEMORY_LIMIT` | `1G` | Memory limit for the `serve` container |
 | `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
 | `PUID`, `PGID` | `10000` | Runtime uid/gid |
 | `REPO_URL`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` | blank | `workspace-init` only; it names what is missing |
@@ -224,8 +244,9 @@ deployment half:
   to `agents`, for the same reason `GH_TOKEN` is not: every shell command an agent runs can read
   that container's environment and files. An agent that could use the recording identity could
   approve its own change in a decider's name, and one App can serve every store one operator
-  runs. For the same reason `serve` never runs code the agents can write: its ctxr lives in its
-  own `serve-home` volume, which no agent container mounts.
+  runs. For the same reason `serve` never runs code the agents can write: its ctxr and its model CLIs
+  live in its own `serve-home` volume, which no agent container mounts, and the model CLIs run
+  confined so that they cannot read the key.
 
 With no App ID set, `serve` sees blank variables and records nothing.
 
