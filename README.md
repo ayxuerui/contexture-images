@@ -79,6 +79,15 @@ deliveries with, and `serve` gets it as `/run/secrets/webhook-secret` and accept
 `POST /hooks/github`. The agents container never receives it. The store's hostname then needs a Cloudflare Access
 bypass for exactly `/hooks/github`.
 
+**Tokens for other GitHub owners, optional.** When the store mounts a store whose owner the agent's own token
+cannot reach (a fine-grained token covers one owner), set `CONTEXTURE_OWNER_TOKENS_PATH` to a host directory
+holding one file per owner, named exactly as the owner (`ReadyRun-AI`), each holding a fine-grained token with
+Contents and Pull requests read/write and Metadata read on the mounted repositories. The agents container gets
+it read-only as `/run/secrets/owner-tokens`, with `CONTEXTURE_GITHUB_OWNER_TOKENS_DIR` pointing there (ctxr
+0.37.0); `serve` never receives it. Make the directory 755 and its files 644 inside a host directory only you can
+read: the mount keeps host modes, and the agent runs as uid 10000. The directory is mounted live, so a replaced
+token is used from ctxr's next call, with no restart.
+
 **When a ctxr release raises the store schema** (rare: it was 10 from 0.20.0 to 0.34.0), each
 container's ctxr refuses the store from its next daily update until the store migrates: `serve`
 goes unhealthy, and agents' ctxr commands fail. The agents container's update opens the migration
