@@ -104,7 +104,10 @@ class Runtime(unittest.TestCase):
                 self.assertNotIn('serve-home', {m['source'] for m in service.get('volumes', [])}, name)
         self.assertIsNone(serve.get('entrypoint'), 'the runtime entrypoint installs its ctxr')
         env = serve['environment']
-        self.assertEqual((env['HARNESSES'], env['TOOLS'], env['HARNESS_SERVICES']), ('', 'ctxr', 'ctxr-serve'))
+        # The model CLIs install for a confined second opinion, with no program of their own.
+        self.assertEqual((env['HARNESSES'], env['TOOLS'], env['HARNESS_SERVICES']), ('claude,codex,agy', 'ctxr', 'ctxr-serve'))
+        bare = self.render(env=dict(REQUIRED, SERVE_HARNESSES=''))['services']['serve']['environment']
+        self.assertEqual(bare['HARNESSES'], '', 'an empty SERVE_HARNESSES leaves the model CLIs out')
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key or 'WEBHOOK' in key for key in agents['environment']))

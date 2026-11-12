@@ -173,13 +173,17 @@ services:
   # the App key and agents must not, with its own home (`serve-home`) that no agent container
   # mounts: the same image, entrypoint and supervisor as `agents`, selecting only ctxr and its
   # `ctxr-serve` program. ctxr installs there on first boot and updates daily, restarting serve.
+  # The claude, codex and agy CLIs install there too, with no program of their own, for the second
+  # opinion serve runs over MCP: ctxr confines each run to a fresh folder holding only that CLI's
+  # login, under Landlock through the image's setpriv, so it cannot read the App key
+  # (serve-the-second-opinion-to-chat-apps in contexture). Sign each in once; see the README.
   serve:
     image: *image
     pull_policy: always
     restart: unless-stopped
     environment:
       <<: *approval-env
-      HARNESSES: ""
+      HARNESSES: ${SERVE_HARNESSES-claude,codex,agy}
       TOOLS: ctxr
       HARNESS_SERVICES: ctxr-serve
       CONTEXTURE_STORE_ROOT: /store
@@ -206,7 +210,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # A confined default-tier critique peaked at 420 MB beside serve's 90-160 MB (2026-11-11).
+          memory: ${SERVE_MEMORY_LIMIT:-1G}
           cpus: "1.0"
 
   # --- Home backup ---------------------------------------------------------------------------
