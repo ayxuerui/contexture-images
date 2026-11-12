@@ -10,6 +10,8 @@
 #   3. A store that stops shipping the skill loses the copy, so an opt-out retires the runner.
 #   4. A store that never shipped it gets nothing.
 #   5. The copy installed under the skill's former name, ctxr-circleback, is removed.
+#   6. The HOME run.sh sets is the agent's home, not a directory inside HERMES_HOME, and a missing
+#      agent home stops the launcher with a COLLECTION FAILED line before the runner starts.
 #
 # Needs only sh and node (to run the launcher against a stand-in runner).
 #
@@ -25,13 +27,14 @@ fail() { echo "FAIL: $*"; FAILED=1; }
 pass() { echo "ok: $*"; }
 
 STORE="$WORK/store"
-HERMES="$WORK/hermes"
+AGENT="$WORK/agent"
+HERMES="$AGENT/.hermes"
 SKILL="$STORE/.agents/skills/ctxr-capture-circleback"
 DEST="$HERMES/scripts/ctxr-capture-circleback"
 mkdir -p "$STORE" "$HERMES/scripts"
 
 install_runner() {
-  STORE_DIR="$STORE" HERMES_HOME="$HERMES" sh "$SOURCE" > "$WORK/out" 2>&1
+  STORE_DIR="$STORE" AGENT_HOME="$AGENT" HERMES_HOME="$HERMES" sh "$SOURCE" > "$WORK/out" 2>&1
 }
 
 # 4. Nothing shipped, nothing installed.
@@ -50,10 +53,22 @@ install_runner || fail "exited non-zero installing the skill"
 [ -x "$DEST/run.sh" ] && pass "run.sh is executable" || fail "run.sh missing or not executable"
 OUT=$(cd "$WORK" && bash "$DEST/run.sh")
 case "$OUT" in
-  *"\"cwd\":\"$STORE\""*"\"home\":\"$HERMES/home\""*"\"root\":\"$STORE\""*"$DEST/sweep.mjs"*)
+  *"\"cwd\":\"$STORE\""*"\"home\":\"$AGENT\""*"\"root\":\"$STORE\""*"$DEST/sweep.mjs"*)
     pass "launcher runs the copied runner from the store with the agent's HOME" ;;
   *) fail "launcher ran with the wrong context: $OUT" ;;
 esac
+
+# 6. With no AGENT_HOME, the home defaults to the caller's HOME, and HERMES_HOME to its .hermes.
+HOME="$AGENT" STORE_DIR="$STORE" sh "$SOURCE" > "$WORK/out" 2>&1 || fail "exited non-zero with defaults"
+grep -q "^export HOME=\"$AGENT\"\$" "$DEST/run.sh" \
+  && pass "the agent's home defaults to the caller's HOME" || fail "run.sh does not default to the caller's HOME: $(grep HOME "$DEST/run.sh")"
+
+# 6. A missing agent home stops the launcher with a clear line, before the runner.
+STORE_DIR="$STORE" AGENT_HOME="$WORK/gone" HERMES_HOME="$HERMES" sh "$SOURCE" > "$WORK/out" 2>&1
+OUT=$(cd "$WORK" && bash "$DEST/run.sh")
+[ "$OUT" = "COLLECTION FAILED: no agent home at $WORK/gone" ] \
+  && pass "a missing agent home fails loudly" || fail "missing agent home gave: $OUT"
+install_runner
 
 # A refreshed skill replaces the copy rather than merging into it.
 rm "$SKILL/settings.json"
