@@ -9,9 +9,11 @@
 # `settings.json`, into a store that declares a `circleback` block. A Hermes cron job's
 # `--script` must live under $HERMES_HOME/scripts, and Hermes runs a `.sh` with bash and anything
 # else with Python. So the skill directory is copied there, beside a `run.sh` launcher that:
-#   - sets HOME to the agent's home, where `cb` and `gh` are signed in, and stops with a
-#     COLLECTION FAILED line when that directory is missing, so a layout change reads as what it
-#     is rather than as a git credential error;
+#   - checks it runs with the agent's real HOME, where `cb` and `gh` are signed in. Hermes'
+#     recipe sets TERMINAL_HOME_MODE=real so it does; if Hermes hands it another HOME (its
+#     container default, $HERMES_HOME/home), it stops with a COLLECTION FAILED line naming both,
+#     rather than failing later on a git credential error. It does not set HOME itself: the home
+#     is Hermes' to get right, for its other tools too;
 #   - changes into the store, which the runner reads as CONTEXTURE_STORE_ROOT;
 #   - runs the copied runner by absolute path, because a job's working directory is not
 #     guaranteed.
@@ -26,16 +28,12 @@
 # Inputs, all optional:
 #   STORE_DIR    the store checkout (default $CONTEXTURE_STORE_ROOT, else /store)
 #   SKILLS_DIR   where the store's skills are (default $STORE/.agents/skills)
-#   AGENT_HOME   the agent's home, where `cb` and `gh` keep their sign-ins (default $HOME). It is
-#                not derived from HERMES_HOME: Hermes keeps its home inside the agent's
-#                (~/.hermes), not the other way round.
-#   HERMES_HOME  Hermes's home (default $AGENT_HOME/.hermes)
+#   HERMES_HOME  Hermes's home (default $HOME/.hermes)
 set -u
 
 STORE="${STORE_DIR:-${CONTEXTURE_STORE_ROOT:-/store}}"
 SKILLS="${SKILLS_DIR:-$STORE/.agents/skills}"
-AGENT="${AGENT_HOME:-${HOME:-/home/agent}}"
-HERMES="${HERMES_HOME:-$AGENT/.hermes}"
+HERMES="${HERMES_HOME:-${HOME:-/home/agent}/.hermes}"
 SOURCE="$SKILLS/ctxr-capture-circleback"
 DEST="$HERMES/scripts/ctxr-capture-circleback"
 # ctxr 0.30.0 shipped the skill as ctxr-circleback; a start on that release installed it here.
@@ -64,8 +62,11 @@ fi
 if ! cat > "$DEST/run.sh" <<LAUNCHER
 #!/bin/sh
 # Written by ctxr-install-circleback-script at container start. Do not edit: the next start rewrites it.
-[ -d "$AGENT" ] || { echo "COLLECTION FAILED: no agent home at $AGENT"; exit 0; }
-export HOME="$AGENT"
+# Hermes sets HERMES_REAL_HOME to the agent's home on every subprocess. Run by hand, it is unset.
+if [ -n "\${HERMES_REAL_HOME:-}" ] && [ "\$HOME" != "\$HERMES_REAL_HOME" ]; then
+  echo "COLLECTION FAILED: Hermes ran this with HOME=\$HOME, not the agent's home \$HERMES_REAL_HOME, so git, gh and cb have no sign-ins. Set TERMINAL_HOME_MODE=real for the gateway."
+  exit 0
+fi
 export CONTEXTURE_STORE_ROOT="$STORE"
 cd "$STORE" || { echo "COLLECTION FAILED: no store at $STORE"; exit 0; }
 exec node "$DEST/sweep.mjs"
