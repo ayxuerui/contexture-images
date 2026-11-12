@@ -18,14 +18,18 @@ binaries = ["hermes"]
 command = ["hermes", "gateway", "run", "--replace", "--external-supervisor"]
 # Its API server, which compose enables (the WebUI's health pill and cron fires use it).
 probe = "http://127.0.0.1:${API_SERVER_PORT:-8642}/"
-environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WRITE_SAFE_ROOT = "${HOME}:${CONTEXTURE_STORE_ROOT}:/tmp" }
+# TERMINAL_HOME_MODE=real: Hermes runs its tools and cron scripts with the agent's real HOME,
+# where git, gh and cb are signed in. Its default (`auto`) detects the container and gives every
+# subprocess ${HERMES_HOME}/home instead, an empty directory with no sign-ins. A `terminal.home_mode`
+# in config.yaml would override this.
+environment = { HERMES_HOME = "${HOME}/.hermes", HERMES_WRITE_SAFE_ROOT = "${HOME}:${CONTEXTURE_STORE_ROOT}:/tmp", TERMINAL_HOME_MODE = "real" }
 
 # The dashboard. Host and port come from compose (HERMES_DASHBOARD_HOST/PORT), defaulting to
 # loopback: Hermes refuses a non-loopback bind without dashboard auth in config.yaml.
 [services.hermes-dashboard]
 command = ["${RUNTIME_RECIPE_DIR}/run-dashboard"]
 probe = "http://127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}/"
-environment = { HERMES_HOME = "${HOME}/.hermes" }
+environment = { HERMES_HOME = "${HOME}/.hermes", TERMINAL_HOME_MODE = "real" }
 
 # The home is backed up whole; Hermes' databases are the one part that is not copied file by
 # file, because a live SQLite file copied mid-write is torn. `hermes backup` copies each with

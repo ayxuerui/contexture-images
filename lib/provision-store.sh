@@ -46,8 +46,8 @@ log() { echo "[ctxr-provision] $*"; }
 : "${GIT_USER_NAME:?GIT_USER_NAME is required}"
 : "${GIT_USER_EMAIL:?GIT_USER_EMAIL is required}"
 
-# The agent's own HOME, and the same path Hermes resolves `~` to for tool subprocesses
-# ({HERMES_HOME}/home, hardcoded in its home_mode policy). Credentials written here are
+# The agent's own HOME, and the HOME Hermes gives its tool subprocesses (the runtime recipe sets
+# TERMINAL_HOME_MODE=real; Hermes' container default would be {HERMES_HOME}/home). Credentials written here are
 # therefore found by the long-running gateway's subprocesses without GH_TOKEN ever being in
 # their environment -- which is the point, since passing it through would expose the token to
 # every shell command the agent runs.
