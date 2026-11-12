@@ -9,7 +9,9 @@
 # `settings.json`, into a store that declares a `circleback` block. A Hermes cron job's
 # `--script` must live under $HERMES_HOME/scripts, and Hermes runs a `.sh` with bash and anything
 # else with Python. So the skill directory is copied there, beside a `run.sh` launcher that:
-#   - sets HOME to the agent's home, where `cb` and `gh` are signed in;
+#   - sets HOME to the agent's home, where `cb` and `gh` are signed in, and stops with a
+#     COLLECTION FAILED line when that directory is missing, so a layout change reads as what it
+#     is rather than as a git credential error;
 #   - changes into the store, which the runner reads as CONTEXTURE_STORE_ROOT;
 #   - runs the copied runner by absolute path, because a job's working directory is not
 #     guaranteed.
@@ -24,12 +26,16 @@
 # Inputs, all optional:
 #   STORE_DIR    the store checkout (default $CONTEXTURE_STORE_ROOT, else /store)
 #   SKILLS_DIR   where the store's skills are (default $STORE/.agents/skills)
-#   HERMES_HOME  Hermes's home (default /opt/data)
+#   AGENT_HOME   the agent's home, where `cb` and `gh` keep their sign-ins (default $HOME). It is
+#                not derived from HERMES_HOME: Hermes keeps its home inside the agent's
+#                (~/.hermes), not the other way round.
+#   HERMES_HOME  Hermes's home (default $AGENT_HOME/.hermes)
 set -u
 
 STORE="${STORE_DIR:-${CONTEXTURE_STORE_ROOT:-/store}}"
 SKILLS="${SKILLS_DIR:-$STORE/.agents/skills}"
-HERMES="${HERMES_HOME:-/opt/data}"
+AGENT="${AGENT_HOME:-${HOME:-/home/agent}}"
+HERMES="${HERMES_HOME:-$AGENT/.hermes}"
 SOURCE="$SKILLS/ctxr-capture-circleback"
 DEST="$HERMES/scripts/ctxr-capture-circleback"
 # ctxr 0.30.0 shipped the skill as ctxr-circleback; a start on that release installed it here.
@@ -58,7 +64,8 @@ fi
 if ! cat > "$DEST/run.sh" <<LAUNCHER
 #!/bin/sh
 # Written by ctxr-install-circleback-script at container start. Do not edit: the next start rewrites it.
-export HOME="$HERMES/home"
+[ -d "$AGENT" ] || { echo "COLLECTION FAILED: no agent home at $AGENT"; exit 0; }
+export HOME="$AGENT"
 export CONTEXTURE_STORE_ROOT="$STORE"
 cd "$STORE" || { echo "COLLECTION FAILED: no store at $STORE"; exit 0; }
 exec node "$DEST/sweep.mjs"

@@ -556,8 +556,9 @@ it, Hermes' recipe runs `ctxr-install-circleback-script` after the store update 
 `CTXR_UPDATE_STORE_ENABLED` is on:
 
 - It copies the skill's directory to `~/.hermes/scripts/ctxr-capture-circleback/`.
-- It writes `run.sh` beside it. The launcher sets the agent's `HOME`, changes into the store, and runs the copied
-  `sweep.mjs` by absolute path.
+- It writes `run.sh` beside it. The launcher sets `HOME` to the agent's home (`~`, where `cb` and `gh` are signed
+  in, not a directory under `~/.hermes`), changes into the store, and runs the copied `sweep.mjs` by absolute path.
+  When that home is missing it prints `COLLECTION FAILED: no agent home at …` instead of running.
 - A store that stops shipping the skill loses the copy.
 
 A weekly job then looks like this:
