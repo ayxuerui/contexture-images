@@ -23,7 +23,7 @@
 #   - the backup variables are HOME_BACKUP_* and HOME_CONFIG_*; the HARNESS_BACKUP_* and
 #     HARNESS_CONFIG_* names they replace are still read when the new ones are unset.
 
-x-image: &image ghcr.io/ayxuerui/contexture-runtime:1.0.0
+x-image: &image ghcr.io/ayxuerui/contexture-runtime:1.0.1
 
 # What a container has: the harnesses (the agents), the tools they use, and the harnesses'
 # programs to run. Defaulted here, so one added to the default reaches every store on merge; a

@@ -21,12 +21,13 @@ FROM ${DEBIAN_IMAGE}
 # supervisor runs the programs. python3 runs runtime-install and the platform venv; it is
 # Debian's, and nothing on this image opens a live Hermes database with it (see the design's
 # SQLite section), which is why no sqlite3 CLI is installed. zstd lets claude's installer take
-# its compressed download.
+# its compressed download. ripgrep is what `ctxr serve` runs for the MCP surface's Grep and Glob:
+# ctxr spawns `rg` from PATH and ships none of its own, so without it both tools fail.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client procps less \
-      python3 python3-venv supervisor tini xz-utils zstd; \
+      python3 python3-venv ripgrep supervisor tini xz-utils zstd; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     rm -f /etc/supervisor/conf.d/*
