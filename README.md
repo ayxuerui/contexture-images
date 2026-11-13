@@ -86,6 +86,17 @@ docker compose exec -u agent serve ctxr second-opinion preflight --require-confi
 The last line should report each CLI `OK` and `confined: yes`. `serve`'s memory limit is
 `SERVE_MEMORY_LIMIT`, default `1G`: a critique peaks at about 420 MB beside serve's own 100-160 MB.
 
+A CLI reported `DOWN` with `invalid model selection` is signed in but not offered the model ctxr asks
+for: agy lists models by the account's plan. Name one it does offer in the store's `.env`, then
+recreate `serve`. `docker compose exec -u agent serve agy models` lists them.
+
+```sh
+CTXR_SECOND_OPINION_AGY_MODEL="Gemini 3.8 Flash (High)"
+```
+
+The override applies to both tiers. `CTXR_SECOND_OPINION_{CLAUDE,CODEX}_MODEL` and
+`CTXR_SECOND_OPINION_{CLAUDE,CODEX}_EFFORT` reach `serve` the same way.
+
 **The agents keep their own clone current.** The default `HARNESS_SERVICES` includes `ctxr-sync`, which runs
 `ctxr sync --every ${CTXR_SYNC_MINUTES:-5}` (ctxr 0.36.0) as the agent, with the agent's own token: each round
 fast-forwards the store's clone and its mounts when they are clean and on the default branch, and leaves local work
@@ -202,6 +213,7 @@ starts.
 | `AGENTS_MEMORY_LIMIT`, `AGENTS_CPUS` | `6G`, `3.0` | Budget for the `agents` container |
 | `SERVE_HARNESSES` | `claude,codex,agy` | The model CLIs `serve` installs for a second opinion; empty leaves them out |
 | `SERVE_MEMORY_LIMIT` | `1G` | Memory limit for the `serve` container |
+| `CTXR_SECOND_OPINION_{CLAUDE,CODEX,AGY}_MODEL`, `CTXR_SECOND_OPINION_{CLAUDE,CODEX}_EFFORT` | blank | The second opinion's model and effort in `serve`, per CLI; blank keeps ctxr's choice |
 | `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
 | `PUID`, `PGID` | `10000` | Runtime uid/gid |
 | `REPO_URL`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` | blank | `workspace-init` only; it names what is missing |

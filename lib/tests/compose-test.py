@@ -109,6 +109,12 @@ class Runtime(unittest.TestCase):
         bare = self.render(env=dict(REQUIRED, SERVE_HARNESSES=''))['services']['serve']['environment']
         self.assertEqual(bare['HARNESSES'], '', 'an empty SERVE_HARNESSES leaves the model CLIs out')
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
+        # The second opinion's models are the operator's to name; blank leaves ctxr's own choice.
+        overrides = ('CLAUDE_MODEL', 'CLAUDE_EFFORT', 'CODEX_MODEL', 'CODEX_EFFORT', 'AGY_MODEL')
+        self.assertEqual({env[f'CTXR_SECOND_OPINION_{name}'] for name in overrides}, {''})
+        named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_AGY_MODEL='Gemini 3.8 Flash (High)'))
+        self.assertEqual(named['services']['serve']['environment']['CTXR_SECOND_OPINION_AGY_MODEL'],
+                         'Gemini 3.8 Flash (High)')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key or 'WEBHOOK' in key for key in agents['environment']))
         self.assertEqual({s['source'] for s in agents.get('secrets', [])}, {'owner-tokens'},
