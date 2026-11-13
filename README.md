@@ -6,7 +6,7 @@ maintaining its own Dockerfile.
 
 | Image | Base | Contents |
 |---|---|---|
-| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION` |
+| `ghcr.io/ayxuerui/contexture-runtime` | `debian:trixie-slim` | The platform every store runs on: tini, supervisord, the `agent` user, Node, `gh`, `restic`, `rclone`, `pandoc`, `jq`, `ripgrep` (for `ctxr serve`'s Grep and Glob), a document-skill venv. **No harness and no ctxr in it**: each is installed into a home by its own installer. Tagged by `RUNTIME_VERSION` |
 
 The earlier image, `contexture-hermes` (Hermes' upstream image with every tool baked in), is
 retired: no store runs it, and it is no longer built. Its tags stay on GHCR.

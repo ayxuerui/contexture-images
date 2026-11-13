@@ -115,6 +115,10 @@ with tempfile.TemporaryDirectory() as temporary:
         assert docker('exec', RUN, 'ps', '-o', 'user=', '-p', '1').stdout.strip() == 'root'  # only tini
         print('PASS: boot installs, supervisord runs as agent, programs get HOME and the store cwd')
 
+        # `ctxr serve` spawns `rg` from PATH for the MCP Grep and Glob, and ships none of its own.
+        assert agent(RUN, 'rg', '--version').stdout.startswith('ripgrep '), 'rg must be on the agent PATH'
+        print('PASS: ripgrep is on the agent PATH, for serve')
+
         before = {p: program_pid(RUN, p) for p in ('claude-remote', 'codex-remote', 'agy-remote')}
         docker('exec', RUN, 'pkill', '-KILL', '-f', 'harness-remote run codex')
         eventually(lambda: program_pid(RUN, 'codex-remote') not in ('0', before['codex-remote']),
