@@ -194,6 +194,13 @@ services:
       RUNTIME_MIN_FREE_MB: ${RUNTIME_MIN_FREE_MB:-2048}
       # The store's own changes are the agents' to open; serve only reads and lands.
       CTXR_UPDATE_STORE_ENABLED: "0"
+      # The second opinion's model and effort for each CLI, for an account that is not offered ctxr's
+      # default (agy lists models by plan). Blank keeps ctxr's own choice for that tier.
+      CTXR_SECOND_OPINION_CLAUDE_MODEL: ${CTXR_SECOND_OPINION_CLAUDE_MODEL:-}
+      CTXR_SECOND_OPINION_CLAUDE_EFFORT: ${CTXR_SECOND_OPINION_CLAUDE_EFFORT:-}
+      CTXR_SECOND_OPINION_CODEX_MODEL: ${CTXR_SECOND_OPINION_CODEX_MODEL:-}
+      CTXR_SECOND_OPINION_CODEX_EFFORT: ${CTXR_SECOND_OPINION_CODEX_EFFORT:-}
+      CTXR_SECOND_OPINION_AGY_MODEL: ${CTXR_SECOND_OPINION_AGY_MODEL:-}
     secrets:
       - github-app-key
       - webhook-secret
