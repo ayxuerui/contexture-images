@@ -201,6 +201,14 @@ services:
       CTXR_SECOND_OPINION_CODEX_MODEL: ${CTXR_SECOND_OPINION_CODEX_MODEL:-}
       CTXR_SECOND_OPINION_CODEX_EFFORT: ${CTXR_SECOND_OPINION_CODEX_EFFORT:-}
       CTXR_SECOND_OPINION_AGY_MODEL: ${CTXR_SECOND_OPINION_AGY_MODEL:-}
+      # A critic that runs through OpenRouter in place of its CLI (ctxr second-opinion-through-openrouter).
+      # The slug variables route one critic each, at both tiers; a store can name a slug per tier in
+      # its contexture.yaml instead. The key is read from here only and ctxr gives it to no model CLI.
+      # Blank leaves every critic on its CLI. Never set a critic's slug and its model together.
+      CTXR_SECOND_OPINION_CLAUDE_OPENROUTER: ${CTXR_SECOND_OPINION_CLAUDE_OPENROUTER:-}
+      CTXR_SECOND_OPINION_CODEX_OPENROUTER: ${CTXR_SECOND_OPINION_CODEX_OPENROUTER:-}
+      CTXR_SECOND_OPINION_AGY_OPENROUTER: ${CTXR_SECOND_OPINION_AGY_OPENROUTER:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     secrets:
       - github-app-key
       - webhook-secret

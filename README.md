@@ -97,6 +97,20 @@ CTXR_SECOND_OPINION_AGY_MODEL="Gemini 3.8 Flash (High)"
 The override applies to both tiers. `CTXR_SECOND_OPINION_{CLAUDE,CODEX}_MODEL` and
 `CTXR_SECOND_OPINION_{CLAUDE,CODEX}_EFFORT` reach `serve` the same way.
 
+A critic can run through OpenRouter in place of its CLI (ctxr with `second-opinion-through-openrouter`),
+for a CLI that is not signed in or not offered the model. Put the key in the store's `.env`, and name
+the model either there, for both tiers, or per tier in the store's `contexture.yaml` under
+`second_opinion.<tier>.<cli>.openrouter`. Then recreate `serve`.
+
+```sh
+OPENROUTER_API_KEY=sk-or-...
+CTXR_SECOND_OPINION_AGY_OPENROUTER=<vendor>/<model>
+```
+
+The key reaches `serve` only, and ctxr passes it to no model CLI. Set a spending limit on it at
+OpenRouter. Do not set a critic's `_OPENROUTER` and `_MODEL` together: ctxr refuses the run. A routed
+critic's preflight line ends with `through OpenRouter`.
+
 **The agents keep their own clone current.** The default `HARNESS_SERVICES` includes `ctxr-sync`, which runs
 `ctxr sync --every ${CTXR_SYNC_MINUTES:-5}` (ctxr 0.36.0) as the agent, with the agent's own token: each round
 fast-forwards the store's clone and its mounts when they are clean and on the default branch, and leaves local work
@@ -214,6 +228,7 @@ starts.
 | `SERVE_HARNESSES` | `claude,codex,agy` | The model CLIs `serve` installs for a second opinion; empty leaves them out |
 | `SERVE_MEMORY_LIMIT` | `1G` | Memory limit for the `serve` container |
 | `CTXR_SECOND_OPINION_{CLAUDE,CODEX,AGY}_MODEL`, `CTXR_SECOND_OPINION_{CLAUDE,CODEX}_EFFORT` | blank | The second opinion's model and effort in `serve`, per CLI; blank keeps ctxr's choice |
+| `OPENROUTER_API_KEY`, `CTXR_SECOND_OPINION_{CLAUDE,CODEX,AGY}_OPENROUTER` | blank | `serve` only: the key and model slug for a critic that runs through OpenRouter in place of its CLI |
 | `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
 | `PUID`, `PGID` | `10000` | Runtime uid/gid |
 | `REPO_URL`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` | blank | `workspace-init` only; it names what is missing |

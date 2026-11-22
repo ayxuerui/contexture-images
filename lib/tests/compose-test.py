@@ -115,6 +115,18 @@ class Runtime(unittest.TestCase):
         named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_AGY_MODEL='Gemini 3.8 Flash (High)'))
         self.assertEqual(named['services']['serve']['environment']['CTXR_SECOND_OPINION_AGY_MODEL'],
                          'Gemini 3.8 Flash (High)')
+        # A critic can run through OpenRouter; blank leaves every critic on its CLI.
+        routed = ('CTXR_SECOND_OPINION_CLAUDE_OPENROUTER', 'CTXR_SECOND_OPINION_CODEX_OPENROUTER',
+                  'CTXR_SECOND_OPINION_AGY_OPENROUTER', 'OPENROUTER_API_KEY')
+        self.assertEqual({env[name] for name in routed}, {''})
+        given = self.render(env=dict(REQUIRED, OPENROUTER_API_KEY='sk-or-test',
+                                     CTXR_SECOND_OPINION_AGY_OPENROUTER='vendor/model'))['services']
+        self.assertEqual((given['serve']['environment']['OPENROUTER_API_KEY'],
+                          given['serve']['environment']['CTXR_SECOND_OPINION_AGY_OPENROUTER']),
+                         ('sk-or-test', 'vendor/model'))
+        for name, service in given.items():
+            if name != 'serve':
+                self.assertNotIn('sk-or-test', str(service), f'the OpenRouter key reaches serve only, not {name}')
         agents = model['services']['agents']
         self.assertFalse(any('GITHUB_APP' in key or 'WEBHOOK' in key for key in agents['environment']))
         self.assertEqual({s['source'] for s in agents.get('secrets', [])}, {'owner-tokens'},
