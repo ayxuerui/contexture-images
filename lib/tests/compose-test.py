@@ -109,21 +109,16 @@ class Runtime(unittest.TestCase):
         bare = self.render(env=dict(REQUIRED, SERVE_HARNESSES=''))['services']['serve']['environment']
         self.assertEqual(bare['HARNESSES'], '', 'an empty SERVE_HARNESSES leaves the model CLIs out')
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
-        # The second opinion's models are the operator's to name; blank leaves ctxr's own choice.
-        overrides = ('CLAUDE_MODEL', 'CLAUDE_EFFORT', 'CODEX_MODEL', 'CODEX_EFFORT', 'AGY_MODEL')
-        self.assertEqual({env[f'CTXR_SECOND_OPINION_{name}'] for name in overrides}, {''})
-        named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_AGY_MODEL='Gemini 3.8 Flash (High)'))
-        self.assertEqual(named['services']['serve']['environment']['CTXR_SECOND_OPINION_AGY_MODEL'],
-                         'Gemini 3.8 Flash (High)')
-        # A critic can run through OpenRouter; blank leaves every critic on its CLI.
-        routed = ('CTXR_SECOND_OPINION_CLAUDE_OPENROUTER', 'CTXR_SECOND_OPINION_CODEX_OPENROUTER',
-                  'CTXR_SECOND_OPINION_AGY_OPENROUTER', 'OPENROUTER_API_KEY')
-        self.assertEqual({env[name] for name in routed}, {''})
-        given = self.render(env=dict(REQUIRED, OPENROUTER_API_KEY='sk-or-test',
-                                     CTXR_SECOND_OPINION_AGY_OPENROUTER='vendor/model'))['services']
-        self.assertEqual((given['serve']['environment']['OPENROUTER_API_KEY'],
-                          given['serve']['environment']['CTXR_SECOND_OPINION_AGY_OPENROUTER']),
-                         ('sk-or-test', 'vendor/model'))
+        # A critic's route, model and effort are the store's to write in contexture.yaml: serve
+        # receives no variable for them, whatever the store's .env sets.
+        named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_GEMINI_MODEL='Gemini 3.8 Flash (High)',
+                                     CTXR_SECOND_OPINION_AGY_OPENROUTER='vendor/model'))['services']['serve']
+        for rendered in (env, named['environment']):
+            self.assertEqual([name for name in rendered if name.startswith('CTXR_SECOND_OPINION_')], [])
+        # The key alone sends the critics through OpenRouter; blank leaves them on their CLIs.
+        self.assertEqual(env['OPENROUTER_API_KEY'], '')
+        given = self.render(env=dict(REQUIRED, OPENROUTER_API_KEY='sk-or-test'))['services']
+        self.assertEqual(given['serve']['environment']['OPENROUTER_API_KEY'], 'sk-or-test')
         for name, service in given.items():
             if name != 'serve':
                 self.assertNotIn('sk-or-test', str(service), f'the OpenRouter key reaches serve only, not {name}')
