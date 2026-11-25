@@ -194,20 +194,18 @@ services:
       RUNTIME_MIN_FREE_MB: ${RUNTIME_MIN_FREE_MB:-2048}
       # The store's own changes are the agents' to open; serve only reads and lands.
       CTXR_UPDATE_STORE_ENABLED: "0"
-      # The second opinion's model and effort for each CLI, for an account that is not offered ctxr's
-      # default (agy lists models by plan). Blank keeps ctxr's own choice for that tier.
+      # The second opinion's model and effort for a critic that runs its CLI, for an account that is
+      # not offered ctxr's default (agy lists models by plan). Critics are named for their model
+      # family: gpt runs codex and gemini runs agy. Blank keeps ctxr's own choice for that tier.
       CTXR_SECOND_OPINION_CLAUDE_MODEL: ${CTXR_SECOND_OPINION_CLAUDE_MODEL:-}
       CTXR_SECOND_OPINION_CLAUDE_EFFORT: ${CTXR_SECOND_OPINION_CLAUDE_EFFORT:-}
-      CTXR_SECOND_OPINION_CODEX_MODEL: ${CTXR_SECOND_OPINION_CODEX_MODEL:-}
-      CTXR_SECOND_OPINION_CODEX_EFFORT: ${CTXR_SECOND_OPINION_CODEX_EFFORT:-}
-      CTXR_SECOND_OPINION_AGY_MODEL: ${CTXR_SECOND_OPINION_AGY_MODEL:-}
-      # A critic that runs through OpenRouter in place of its CLI (ctxr second-opinion-through-openrouter).
-      # The slug variables route one critic each, at both tiers; a store can name a slug per tier in
-      # its contexture.yaml instead. The key is read from here only and ctxr gives it to no model CLI.
-      # Blank leaves every critic on its CLI. Never set a critic's slug and its model together.
-      CTXR_SECOND_OPINION_CLAUDE_OPENROUTER: ${CTXR_SECOND_OPINION_CLAUDE_OPENROUTER:-}
-      CTXR_SECOND_OPINION_CODEX_OPENROUTER: ${CTXR_SECOND_OPINION_CODEX_OPENROUTER:-}
-      CTXR_SECOND_OPINION_AGY_OPENROUTER: ${CTXR_SECOND_OPINION_AGY_OPENROUTER:-}
+      CTXR_SECOND_OPINION_GPT_MODEL: ${CTXR_SECOND_OPINION_GPT_MODEL:-}
+      CTXR_SECOND_OPINION_GPT_EFFORT: ${CTXR_SECOND_OPINION_GPT_EFFORT:-}
+      CTXR_SECOND_OPINION_GEMINI_MODEL: ${CTXR_SECOND_OPINION_GEMINI_MODEL:-}
+      # The OpenRouter key. Where it is set, every critic with no route written in the store's
+      # contexture.yaml (second_opinion.<family>.via) goes through OpenRouter, and grok joins as a
+      # fourth. The key is read from here only and ctxr gives it to no model CLI. Blank leaves the
+      # critics on their CLIs. Never set a model above for a critic that goes through OpenRouter.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     secrets:
       - github-app-key
