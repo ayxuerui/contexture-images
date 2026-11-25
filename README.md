@@ -87,16 +87,19 @@ The last line should report each CLI `OK` and `confined: yes`. `serve`'s memory 
 `SERVE_MEMORY_LIMIT`, default `1G`: a critique peaks at about 420 MB beside serve's own 100-160 MB.
 
 A CLI reported `DOWN` with `invalid model selection` is signed in but not offered the model ctxr asks
-for: agy lists models by the account's plan. Name one it does offer in the store's `.env`, then
-recreate `serve`. `docker compose exec -u agent serve agy models` lists them.
+for: agy lists models by the account's plan. Name one it does offer in the store's
+`contexture.yaml`, for each tier. `docker compose exec -u agent serve agy models` lists them.
 
-```sh
-CTXR_SECOND_OPINION_GEMINI_MODEL="Gemini 3.8 Flash (High)"
+```yaml
+second_opinion:
+  gemini:
+    via: cli
+    strong: Gemini 3.8 Flash (High)
+    fast: Gemini 3.8 Flash (High)
 ```
 
-The override applies to both tiers. ctxr names each critic for its model family: `gpt` runs `codex`
-and `gemini` runs `agy`. `CTXR_SECOND_OPINION_{CLAUDE,GPT}_MODEL` and
-`CTXR_SECOND_OPINION_{CLAUDE,GPT}_EFFORT` reach `serve` the same way.
+ctxr names each critic for its model family: `gpt` runs `codex` and `gemini` runs `agy`. `claude`
+and `gpt` take an `effort` in the same block. No model or effort variable reaches `serve`.
 
 The critics can run through OpenRouter in place of their CLIs. Put the key in the store's `.env`,
 then recreate `serve`.
@@ -111,12 +114,11 @@ family under `second_opinion.<family>.via`: `cli` keeps that critic on its CLI, 
 and `openrouter` holds it there. No variable chooses a route.
 
 The key reaches `serve` only, and ctxr passes it to no model CLI. Set a spending limit on it at
-OpenRouter. Do not set a `_MODEL` variable for a critic that goes through OpenRouter: ctxr refuses
-the run. Such a critic's preflight line ends with `through OpenRouter`.
+OpenRouter. A critic that went through it has a preflight line ending with `through OpenRouter`.
 
-ctxr 0.45.0 and earlier named two critics `codex` and `agy` and read
-`CTXR_SECOND_OPINION_{CODEX,AGY}_*` and `CTXR_SECOND_OPINION_<CLI>_OPENROUTER`. `serve` no longer
-receives those; use the names above.
+Earlier versions of this file passed `serve` a model, an effort and an OpenRouter slug for each
+critic as `CTXR_SECOND_OPINION_*` variables. `serve` no longer receives any of them: write the
+store's `contexture.yaml` instead.
 
 **The agents keep their own clone current.** The default `HARNESS_SERVICES` includes `ctxr-sync`, which runs
 `ctxr sync --every ${CTXR_SYNC_MINUTES:-5}` (ctxr 0.36.0) as the agent, with the agent's own token: each round
@@ -234,7 +236,6 @@ starts.
 | `AGENTS_MEMORY_LIMIT`, `AGENTS_CPUS` | `6G`, `3.0` | Budget for the `agents` container |
 | `SERVE_HARNESSES` | `claude,codex,agy` | The model CLIs `serve` installs for a second opinion; empty leaves them out |
 | `SERVE_MEMORY_LIMIT` | `1G` | Memory limit for the `serve` container |
-| `CTXR_SECOND_OPINION_{CLAUDE,GPT,GEMINI}_MODEL`, `CTXR_SECOND_OPINION_{CLAUDE,GPT}_EFFORT` | blank | The second opinion's model and effort in `serve`, for a critic that runs its CLI; blank keeps ctxr's choice |
 | `OPENROUTER_API_KEY` | blank | `serve` only: where set, the critics run through OpenRouter in place of their CLIs unless the store's `contexture.yaml` says otherwise |
 | `CTXR_SERVE_PORT` | `18080` | `serve` listen port |
 | `PUID`, `PGID` | `10000` | Runtime uid/gid |

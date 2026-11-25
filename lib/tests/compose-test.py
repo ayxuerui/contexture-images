@@ -109,17 +109,12 @@ class Runtime(unittest.TestCase):
         bare = self.render(env=dict(REQUIRED, SERVE_HARNESSES=''))['services']['serve']['environment']
         self.assertEqual(bare['HARNESSES'], '', 'an empty SERVE_HARNESSES leaves the model CLIs out')
         self.assertEqual(env['CTXR_UPDATE_STORE_ENABLED'], '0')
-        # The second opinion's models are the operator's to name; blank leaves ctxr's own choice.
-        overrides = ('CLAUDE_MODEL', 'CLAUDE_EFFORT', 'GPT_MODEL', 'GPT_EFFORT', 'GEMINI_MODEL')
-        self.assertEqual({env[f'CTXR_SECOND_OPINION_{name}'] for name in overrides}, {''})
-        named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_GEMINI_MODEL='Gemini 3.8 Flash (High)'))
-        self.assertEqual(named['services']['serve']['environment']['CTXR_SECOND_OPINION_GEMINI_MODEL'],
-                         'Gemini 3.8 Flash (High)')
-        # The critics are named for their model families, and the store's configuration alone
-        # chooses a route: ctxr refuses the names and the route variables of 0.45.0 when set.
-        retired = [name for name in env if name.startswith('CTXR_SECOND_OPINION_')
-                   and ('_CODEX_' in name or '_AGY_' in name or name.endswith('_OPENROUTER'))]
-        self.assertEqual(retired, [])
+        # A critic's route, model and effort are the store's to write in contexture.yaml: serve
+        # receives no variable for them, whatever the store's .env sets.
+        named = self.render(env=dict(REQUIRED, CTXR_SECOND_OPINION_GEMINI_MODEL='Gemini 3.8 Flash (High)',
+                                     CTXR_SECOND_OPINION_AGY_OPENROUTER='vendor/model'))['services']['serve']
+        for rendered in (env, named['environment']):
+            self.assertEqual([name for name in rendered if name.startswith('CTXR_SECOND_OPINION_')], [])
         # The key alone sends the critics through OpenRouter; blank leaves them on their CLIs.
         self.assertEqual(env['OPENROUTER_API_KEY'], '')
         given = self.render(env=dict(REQUIRED, OPENROUTER_API_KEY='sk-or-test'))['services']
